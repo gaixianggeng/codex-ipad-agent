@@ -52,6 +52,15 @@ struct WorkbenchNavigationState: Equatable {
         return sessionID
     }
 
+    /// 宽屏详情不是一次 push，系统不会自动提供返回工作区的按钮；紧凑布局由外层
+    /// `NavigationStack` 管理 path，保留系统返回即可，避免顶栏出现两个返回控件。
+    func showsWorkspaceBackButton(usesCompactNavigation: Bool) -> Bool {
+        guard !usesCompactNavigation, route.detailSessionID != nil else {
+            return false
+        }
+        return route.rootPage == .workspaces
+    }
+
     @discardableResult
     mutating func reduce(
         _ event: WorkbenchNavigationEvent,

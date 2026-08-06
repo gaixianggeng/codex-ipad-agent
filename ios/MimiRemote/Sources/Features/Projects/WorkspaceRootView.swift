@@ -1700,6 +1700,7 @@ private struct WorkspaceDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .sessionRowActions(session)
+                        .accessibilityIdentifier("workspace.session.\(session.id)")
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {

@@ -2707,6 +2707,25 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(state.compactWorkspacePath.isEmpty)
     }
 
+    func testWorkbenchNavigationWorkspaceBackButtonOnlyShowsForWideWorkspaceDetail() {
+        let cases: [(WorkbenchRestorationRoute, Bool, Bool)] = [
+            (.session(id: "workspace-session", source: .workspaces), false, true),
+            (.session(id: "workspace-session", source: .workspaces), true, false),
+            (.session(id: "sessions-session", source: .sessions), false, false),
+            (.session(id: "sessions-session", source: .sessions), true, false),
+            (.workspaces, false, false),
+        ]
+
+        for (route, usesCompactNavigation, expected) in cases {
+            let state = WorkbenchNavigationState(route: route)
+            XCTAssertEqual(
+                state.showsWorkspaceBackButton(usesCompactNavigation: usesCompactNavigation),
+                expected,
+                "route=\(route), compact=\(usesCompactNavigation)"
+            )
+        }
+    }
+
     func testWorkbenchNavigationWorkspaceEmptyStateActionOpensWorkspaceInBothLayouts() {
         for usesCompactNavigation in [true, false] {
             var state = WorkbenchNavigationState(route: .sessions)
