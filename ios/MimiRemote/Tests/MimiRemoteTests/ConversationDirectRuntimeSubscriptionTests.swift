@@ -39,6 +39,95 @@ private actor FirstConfigRequestGate {
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testClaudeAuthoritativeFirstPageRequestsHistoryRefresh() async throws {
+        let project = AgentProject(
+            id: "proj_claude_history_refresh",
+            name: "Claude History Refresh",
+            path: "/tmp/claude-history-refresh"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/list"],
+                    channels: [makeClaudeChannelMetadata()]
+                )
+            }
+        )
+
+        let pageTask = Task {
+            try await runtime.sessionsPage(
+                projectID: project.id,
+                cursor: nil,
+                limit: 20,
+                consistency: .authoritative
+            )
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(list.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        XCTAssertEqual(list.params?.objectValue?["refreshHistory"]?.boolValue, true)
+        transportResponse(transport, id: list.id, result: #"{"data":[],"nextCursor":null}"#)
+
+        let page = try await pageTask.value
+        XCTAssertTrue(page.sessions.isEmpty)
+    }
+
+    func testClaudeHistoryRefreshPolicyAndRecoveryCommand() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        let request = try builder.threadList(
+            cwd: project.path,
+            useStateDBOnly: false,
+            refreshHistory: true
+        )
+        let params = try XCTUnwrap(request.params?.objectValue)
+        XCTAssertEqual(params["refreshHistory"]?.boolValue, true)
+
+        XCTAssertTrue(
+            CodexAppServerSessionRuntime.shouldRefreshHistory(
+                runtimeProvider: "claude",
+                consistency: .authoritative,
+                cursor: nil
+            )
+        )
+        XCTAssertFalse(
+            CodexAppServerSessionRuntime.shouldRefreshHistory(
+                runtimeProvider: "claude",
+                consistency: .authoritative,
+                cursor: "older"
+            )
+        )
+        XCTAssertFalse(
+            CodexAppServerSessionRuntime.shouldRefreshHistory(
+                runtimeProvider: "claude",
+                consistency: .fastIndexed,
+                cursor: nil
+            )
+        )
+        XCTAssertFalse(
+            CodexAppServerSessionRuntime.shouldRefreshHistory(
+                runtimeProvider: "codex",
+                consistency: .authoritative,
+                cursor: nil
+            )
+        )
+
+        XCTAssertEqual(
+            ClaudeSessionRecoveryCommand.make(
+                sessionID: "session'42",
+                cwd: "/Users/me/it's repo"
+            ),
+            #"cd '/Users/me/it'\''s repo' && claude --resume 'session'\''42'"#
+        )
+    }
+
     func testConnectSuspendedBeforeHydrationCannotOverrideNewerUnsubscribeLease() async throws {
         let project = AgentProject(
             id: "proj_connect_hydration_lease",

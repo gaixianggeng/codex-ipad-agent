@@ -584,6 +584,33 @@ pub async fn handle_thread_list(
     state: &Arc<ConnectionState>,
     params: p::ThreadListParams,
 ) -> Result<p::ThreadListResponse, ThreadError> {
+    if params.refresh_history {
+        if params.cursor.is_some() {
+            return Err(ThreadError::InvalidParams(
+                "refreshHistory is only valid on the first page".to_string(),
+            ));
+        }
+        if params.use_state_db_only {
+            return Err(ThreadError::InvalidParams(
+                "refreshHistory cannot be combined with useStateDbOnly".to_string(),
+            ));
+        }
+        if let Some(refresher) = state.history_refresher() {
+            match refresher
+                .refresh_if_due()
+                .await
+                .map_err(ThreadError::from)?
+            {
+                crate::index::HistoryRefreshResult::Refreshed { inserted } => {
+                    tracing::info!(inserted, "refreshed Claude history index");
+                }
+                crate::index::HistoryRefreshResult::RateLimited => {
+                    tracing::debug!("skipped rate-limited Claude history refresh");
+                }
+            }
+        }
+    }
+
     // Match codex-rs semantics: omitted `archived` means "non-archived only"
     // (`unwrap_or(false)`), not "all".
     let archived = Some(params.archived.unwrap_or(false));
@@ -600,10 +627,7 @@ pub async fn handle_thread_list(
         direction: params.sort_direction.unwrap_or(p::SortDirection::Desc),
     };
     let limit = alleycat_bridge_core::resolve_list_limit(params.limit);
-    // `use_state_db_only` is accepted but always-true for this bridge: list
-    // is served from the threads.json index, and the JSONL scan-and-repair
-    // hydration happens at startup, not per-list.
-    let _ = params.use_state_db_only;
+    // 普通请求始终只读 threads.json；只有上面的显式 refreshHistory 首屏会触发受限扫描。
 
     let page = state
         .thread_index()

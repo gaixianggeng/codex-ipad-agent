@@ -591,6 +591,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(params["archived"]?.boolValue, false)
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)
+        XCTAssertNil(params["refreshHistory"])
     }
 
     func testControlledGlobalThreadListOmitsCWDAndCarriesOpaqueCursor() throws {

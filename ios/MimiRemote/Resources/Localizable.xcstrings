@@ -502,6 +502,91 @@
         }
       }
     },
+    "ui.claude_headless_picker_note" : {
+      "comment" : "Explains why a Claude session started in headless mode may not appear in Claude Code's native resume picker.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mimi runs this session through Claude Code's headless mode, so it may not appear in the native `/resume` picker. The session is still stored on the computer; use the command above to resume it exactly."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mimi 通过 Claude Code 的无界面模式运行此会话，因此它可能不会出现在原生 `/resume` 列表中。会话仍保存在电脑上，可用上方命令精确恢复。"
+          }
+        }
+      }
+    },
+    "ui.claude_recovery_command" : {
+      "comment" : "Label for the shell command that resumes a Claude session.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovery command"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复命令"
+          }
+        }
+      }
+    },
+    "ui.claude_recovery_command_copied" : {
+      "comment" : "Confirmation after copying the Claude session recovery command.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recovery command copied"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复命令已复制"
+          }
+        }
+      }
+    },
+    "ui.claude_session_id" : {
+      "comment" : "Label for the complete Claude Code session identifier shown in the Inspector.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Session ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Session ID"
+          }
+        }
+      }
+    },
+    "ui.claude_terminal_recovery" : {
+      "comment" : "Inspector section containing the Claude session ID, working directory, and terminal recovery command.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recover in terminal"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在终端恢复"
+          }
+        }
+      }
+    },
     "ui.claude_request_sent_again" : {
       "comment" : "Confirmation after explicitly retrying a request that failed because Claude Code authentication expired.",
       "localizations" : {
@@ -6840,6 +6925,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制"
+          }
+        }
+      }
+    },
+    "ui.copy_claude_recovery_command" : {
+      "comment" : "Button that copies the shell command used to resume a Claude session.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy recovery command"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制恢复命令"
+          }
+        }
+      }
+    },
+    "ui.copy_claude_recovery_command_hint" : {
+      "comment" : "VoiceOver hint for the Claude session recovery command copy button.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copies a safe command to the clipboard without running it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制安全命令到剪贴板，不会执行命令。"
           }
         }
       }
@@ -17870,6 +17989,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "路径"
+          }
+        }
+      }
+    },
+    "ui.working_directory" : {
+      "comment" : "Label for the directory where a Claude session can be resumed.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Working directory"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作目录"
           }
         }
       }

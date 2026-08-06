@@ -30,6 +30,7 @@ extension ConversationDataFlowTests {
         let firstList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
         XCTAssertEqual(firstList.params?.objectValue?["sortKey"]?.stringValue, "recency_at")
         XCTAssertEqual(firstList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        XCTAssertNil(firstList.params?.objectValue?["refreshHistory"])
         transportResponse(
             transport,
             id: firstList.id,

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct OpenSubagentSessionAction {
     var handler: (SessionContextSubagent) -> Void
@@ -16,6 +17,18 @@ extension EnvironmentValues {
     var openSubagentSession: OpenSubagentSessionAction {
         get { self[OpenSubagentSessionEnvironmentKey.self] }
         set { self[OpenSubagentSessionEnvironmentKey.self] = newValue }
+    }
+}
+
+struct ClaudeSessionRecoveryCommand {
+    /// POSIX shell 的单引号包裹能阻止 cwd 或 Session ID 被解释为命令；内部单引号
+    /// 必须拆成 `'\''`，即结束引用、插入字面单引号、再开始引用。
+    static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    static func make(sessionID: String, cwd: String) -> String {
+        "cd \(shellQuote(cwd)) && claude --resume \(shellQuote(sessionID))"
     }
 }
 
@@ -40,6 +53,7 @@ struct SessionContextSidebarView: View {
             if let context {
                 List {
                     overviewSection(context, session: sessionStore.selectedSession)
+                    claudeRecoverySection(context, session: sessionStore.selectedSession)
                     goalSection(goal: sessionStore.selectedThreadGoal ?? context.goal)
                     subagentSection(context.subagents)
                     commandActionSection()
@@ -224,6 +238,68 @@ struct SessionContextSidebarView: View {
                 ContextValueRow(symbolName: "bubble.left.and.bubble.right", title: "Thread", value: threadID)
             }
         }
+    }
+
+    @ViewBuilder
+    private func claudeRecoverySection(_ context: SessionContextSnapshot, session: AgentSession?) -> some View {
+        if let details = claudeRecoveryDetails(context: context, session: session) {
+            Section(L10n.text("ui.claude_terminal_recovery")) {
+                ClaudeRecoveryValueRow(
+                    symbolName: "number",
+                    title: L10n.text("ui.claude_session_id"),
+                    value: details.sessionID
+                )
+                ClaudeRecoveryValueRow(
+                    symbolName: "folder",
+                    title: L10n.text("ui.working_directory"),
+                    value: details.cwd
+                )
+                ClaudeRecoveryValueRow(
+                    symbolName: "terminal",
+                    title: L10n.text("ui.claude_recovery_command"),
+                    value: details.command
+                )
+                Button {
+                    UIPasteboard.general.string = details.command
+                    sessionStore.setStatusMessage(L10n.text("ui.claude_recovery_command_copied"))
+                } label: {
+                    Label(L10n.text("ui.copy_claude_recovery_command"), systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 44)
+                .accessibilityHint(L10n.text("ui.copy_claude_recovery_command_hint"))
+                .accessibilityIdentifier("sessionInspector.claudeRecovery.copyCommand")
+
+                Text(L10n.text("ui.claude_headless_picker_note"))
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func claudeRecoveryDetails(
+        context: SessionContextSnapshot,
+        session: AgentSession?
+    ) -> (sessionID: String, cwd: String, command: String)? {
+        let runtimeProvider = nonEmpty(session?.runtimeProvider, context.environment?.runtimeProvider)
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude" else {
+            return nil
+        }
+        guard let sessionID = nonEmpty(
+            session?.appServerSessionID,
+            session?.resumeID,
+            context.threadID,
+            session?.id
+        ), let cwd = nonEmpty(session?.dir, context.environment?.cwd) else {
+            return nil
+        }
+        return (
+            sessionID: sessionID,
+            cwd: cwd,
+            command: ClaudeSessionRecoveryCommand.make(sessionID: sessionID, cwd: cwd)
+        )
     }
 
     @ViewBuilder
@@ -687,6 +763,43 @@ private struct ContextValueRow: View {
             .truncationMode(.middle)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ClaudeRecoveryValueRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let symbolName: String
+    let title: String
+    let value: String
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbolName)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: 26, height: 26)
+                .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(tokens.border.opacity(0.46), lineWidth: 1)
+                }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+                Text(value)
+                    .font(themeStore.codeFont(.caption))
+                    .foregroundStyle(tokens.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
 }
 

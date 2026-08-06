@@ -326,6 +326,9 @@ pub struct ThreadListParams {
     pub cwd: Option<Value>,
     #[serde(default)]
     pub use_state_db_only: bool,
+    /// Mimi 的显式历史刷新标记。仅 Claude bridge 消费；普通列表与分页保持只读索引路径。
+    #[serde(default)]
+    pub refresh_history: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_term: Option<String>,
 }

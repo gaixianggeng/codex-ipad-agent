@@ -22,7 +22,7 @@ use alleycat_codex_proto::{
     ReasoningEffort, RequestId, SandboxMode, ThreadItem, Turn, TurnError, TurnStatus,
 };
 
-use crate::index::ClaudeSessionRef;
+use crate::index::{ClaudeHistoryRefresher, ClaudeSessionRef};
 use crate::pool::ClaudePool;
 use crate::pool::claude_protocol::{McpServerInit, RateLimitInfo, SystemInit};
 use crate::translate::items::normalize_dynamic_tool_call_output;
@@ -54,6 +54,8 @@ pub struct ConnectionState {
     session: RwLock<Arc<Session>>,
     claude_pool: Arc<ClaudePool>,
     thread_index: Arc<dyn ThreadIndexHandle>,
+    /// 仅生产 builder 注入；旧的测试 helper 沿用 `None`，普通列表行为不变。
+    history_refresher: Option<Arc<ClaudeHistoryRefresher>>,
     /// Launcher used for `command/exec` shell tools. `None` falls back to a
     /// bridge-default [`alleycat_bridge_core::LocalLauncher`] (preserves the
     /// pre-refactor behavior of the legacy `for_test` helper).
@@ -196,11 +198,32 @@ impl ConnectionState {
         launcher: Option<Arc<dyn ProcessLauncher>>,
         trust_persisted_cwd: bool,
     ) -> Self {
+        Self::with_launcher_and_history_refresher(
+            session,
+            claude_pool,
+            thread_index,
+            defaults,
+            launcher,
+            trust_persisted_cwd,
+            None,
+        )
+    }
+
+    pub fn with_launcher_and_history_refresher(
+        session: Arc<Session>,
+        claude_pool: Arc<ClaudePool>,
+        thread_index: Arc<dyn ThreadIndexHandle>,
+        defaults: ThreadDefaults,
+        launcher: Option<Arc<dyn ProcessLauncher>>,
+        trust_persisted_cwd: bool,
+        history_refresher: Option<Arc<ClaudeHistoryRefresher>>,
+    ) -> Self {
         Self {
             defaults: Mutex::new(defaults),
             session: RwLock::new(session),
             claude_pool,
             thread_index,
+            history_refresher,
             launcher,
             trust_persisted_cwd,
             caches: Mutex::new(ClaudeCaches::default()),
@@ -215,6 +238,10 @@ impl ConnectionState {
 
     pub fn trust_persisted_cwd(&self) -> bool {
         self.trust_persisted_cwd
+    }
+
+    pub fn history_refresher(&self) -> Option<&Arc<ClaudeHistoryRefresher>> {
+        self.history_refresher.as_ref()
     }
 
     pub fn session(&self) -> Arc<Session> {
