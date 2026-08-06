@@ -60,6 +60,57 @@ struct WorkspaceIconMeeGoShape: Shape {
     }
 }
 
+/// 项目图标的唯一视觉实现。工作区胶囊、会话项目锚点和侧栏都复用它，
+/// 仅通过尺寸形成层级，不再各自维护底色、轮廓和 Emoji 比例。
+struct WorkspaceProjectIconTile: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let content: WorkspaceProjectIconContent
+    let size: CGFloat
+    let tokens: ThemeTokens
+
+    var body: some View {
+        Group {
+            switch content {
+            case let .character(character):
+                Image(character.assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(WorkspaceIconMeeGoShape())
+            case let .emoji(emoji):
+                Text(emoji)
+                    .font(.system(size: size * 0.58))
+                    .frame(width: size, height: size)
+                    .background(
+                        emojiTint(emoji).opacity(colorScheme == .dark ? 0.30 : 0.18),
+                        in: WorkspaceIconMeeGoShape()
+                    )
+            }
+        }
+        .overlay {
+            WorkspaceIconMeeGoShape()
+                .stroke(
+                    tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42),
+                    lineWidth: size >= 20 ? 0.75 : 0.5
+                )
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func emojiTint(_ emoji: String) -> Color {
+        let palette: [Color] = [
+            Color(red: 0.91, green: 0.63, blue: 0.48),
+            Color(red: 0.47, green: 0.67, blue: 0.78),
+            Color(red: 0.76, green: 0.64, blue: 0.42),
+            Color(red: 0.88, green: 0.72, blue: 0.34),
+            Color(red: 0.64, green: 0.70, blue: 0.48),
+            Color(red: 0.72, green: 0.53, blue: 0.72),
+        ]
+        return palette[WorkspaceAppearanceStore.tintIndex(for: emoji, count: palette.count)]
+    }
+}
+
 enum WorkspaceStripLayout {
     static let horizontalPadding: CGFloat = 24
     /// 44pt 同时是 Apple 的最小命中尺寸和整条控件带的高度：选中项展开成带名称的胶囊，
@@ -1186,7 +1237,6 @@ private enum WorkspaceSessionLoadState: Equatable {
 private struct WorkspaceProjectChip: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
     let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
@@ -1307,46 +1357,17 @@ private struct WorkspaceProjectChip: View {
     @ViewBuilder
     private var iconTile: some View {
         let size = WorkspaceStripLayout.chipIconSize
-
-        Group {
-            if iconStyle.usesCharacters {
-                Image(displayedCharacter.assetName)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: size, height: size)
-                    .clipShape(WorkspaceIconMeeGoShape())
-            } else {
-                let palette: [Color] = [
-                    Color(red: 0.91, green: 0.63, blue: 0.48),
-                    Color(red: 0.47, green: 0.67, blue: 0.78),
-                    Color(red: 0.76, green: 0.64, blue: 0.42),
-                    Color(red: 0.88, green: 0.72, blue: 0.34),
-                    Color(red: 0.64, green: 0.70, blue: 0.48),
-                    Color(red: 0.72, green: 0.53, blue: 0.72)
-                ]
-                let tint = palette[
-                    WorkspaceAppearanceStore.tintIndex(for: displayedEmoji, count: palette.count)
-                ]
-
-                Text(displayedEmoji)
-                    .font(.system(size: size * 0.58))
-                    .frame(width: size, height: size)
-                    .background(
-                        tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
-                        in: WorkspaceIconMeeGoShape()
-                    )
-            }
-        }
-        .overlay {
-            // 角色图统一使用暖白底；这里只提供适配明暗模式的轮廓，不再叠加随机主题色。
-            WorkspaceIconMeeGoShape()
-                .stroke(tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42), lineWidth: 0.75)
-        }
+        WorkspaceProjectIconTile(
+            content: iconStyle.usesCharacters
+                ? .character(displayedCharacter)
+                : .emoji(displayedEmoji),
+            size: size,
+            tokens: tokens
+        )
         .overlay(alignment: .topTrailing) {
             runningIndicator
         }
         .opacity(isUnavailable ? 0.62 : 1)
-        .accessibilityHidden(true)
     }
 
     @ViewBuilder

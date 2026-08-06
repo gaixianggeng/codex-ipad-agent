@@ -342,6 +342,43 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertTrue(WorkspaceAppearanceStore.builtInCharacters.map(\.id).contains(value))
     }
 
+    func testProjectCharacterIconStaysStableWhenCollidingCatalogArrives() throws {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        // 这两个项目的默认哈希都落在同一角色；旧实现会在批量目录补齐后
+        // 把 project-6 从如来佛祖换成玉皇大帝。
+        let initial = store.projectIconContent(profileID: "mac-a", projectID: "project-6")
+        let expanded = store.projectIconContents(
+            profileID: "mac-a",
+            projectIDs: ["project-5", "project-6"]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(expanded["project-6"]), initial)
+        let characterIDs = expanded.values.compactMap { content -> String? in
+            guard case let .character(character) = content else { return nil }
+            return character.id
+        }
+        XCTAssertEqual(Set(characterIDs).count, 2, "增量稳定后仍应优先避免项目头像重复")
+    }
+
+    func testProjectEmojiStaysStableWhenCollidingCatalogArrives() throws {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        store.setStyle(.emoji, profileID: "mac-a")
+        // project-2 / project-5 的默认 Emoji 都是 📮，用于覆盖首帧 fallback
+        // 与工作区批量避碰结果不一致的真实路径。
+        let initial = store.projectIconContent(profileID: "mac-a", projectID: "project-5")
+        let expanded = store.projectIconContents(
+            profileID: "mac-a",
+            projectIDs: ["project-2", "project-5"]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(expanded["project-5"]), initial)
+        let emoji = expanded.values.compactMap { content -> String? in
+            guard case let .emoji(value) = content else { return nil }
+            return value
+        }
+        XCTAssertEqual(Set(emoji).count, 2)
+    }
+
     func testCharacterAssignmentsStayUniqueWhilePoolHasCapacity() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         let projectIDs = (0..<WorkspaceAppearanceStore.builtInCharacters.count)
@@ -582,5 +619,24 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             )
         )
         XCTAssertNil(store.customEmoji(profileID: profileID, projectID: oldID))
+    }
+
+    func testWorkspaceIdentityMigrationKeepsAutomaticIconDuringCurrentRun() throws {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        let profileID = "mac-a"
+        let oldID = "legacy-project"
+        let oldDefaultID = store.defaultCharacterID(profileID: profileID, projectID: oldID)
+        let newID = try XCTUnwrap(
+            (0..<100)
+                .map { "canonical-project-\($0)" }
+                .first {
+                    store.defaultCharacterID(profileID: profileID, projectID: $0) != oldDefaultID
+                }
+        )
+        let initial = store.projectIconContent(profileID: profileID, projectID: oldID)
+
+        store.migrateProjectIdentity(profileID: profileID, from: oldID, to: newID)
+
+        XCTAssertEqual(store.projectIconContent(profileID: profileID, projectID: newID), initial)
     }
 }

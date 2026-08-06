@@ -486,6 +486,7 @@ struct WorkbenchLayout: Equatable {
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
     let usesFloatingSidebarSurface: Bool
+    let prefersSessionTableDensity: Bool
 
     var usesSheetInspectorNavigation: Bool {
         !usesCompactNavigation && !usesAttachedInspector
@@ -528,6 +529,9 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        // iPad mini 竖屏虽然会退成单列导航，但 744/768pt 仍足以承载与横屏
+        // 收起侧栏后一致的会话表格；只有真正窄的分屏 / Slide Over 才回退 compact。
+        prefersSessionTableDensity = isPad && containerWidth >= 700
     }
 }
 
