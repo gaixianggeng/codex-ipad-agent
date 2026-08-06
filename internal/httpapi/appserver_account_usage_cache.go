@@ -8,6 +8,8 @@ import (
 
 const defaultAccountTokenUsageCacheTTL = time.Hour
 
+const accountTokenUsageForceRefreshParam = "mimiForceRefresh"
+
 // cachedAccountTokenUsageResult 只返回 TTL 内的成功快照。缓存属于当前 agentd
 // 进程与 Codex runtime，不落盘、不跨宿主共享，也不会影响实时额度事件。
 func (r *Router) cachedAccountTokenUsageResult(now time.Time) (json.RawMessage, bool) {
@@ -45,6 +47,14 @@ func (p *appServerGatewayPolicy) cachedAccountTokenUsageResponse(requestPayload 
 	if err := json.Unmarshal(requestPayload, &frame); err != nil ||
 		frame.ID == nil ||
 		frame.Method != "account/usage/read" {
+		return nil, false
+	}
+	params, err := decodeGatewayParams(frame.Params)
+	if err != nil {
+		return nil, false
+	}
+	// 设置页的显式刷新必须读取最新数据；该标记只供 agentd 判断，转发前会被安全参数重写剥离。
+	if forceRefresh, ok := gatewayBoolParam(params, accountTokenUsageForceRefreshParam); ok && forceRefresh {
 		return nil, false
 	}
 	result, ok := p.router.cachedAccountTokenUsageResult(now)

@@ -419,7 +419,12 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	if err := decoder.Decode(&frame); err != nil {
 		return nil, fmt.Errorf("JSON-RPC frame 无效")
 	}
-	frame["params"] = sanitized
+	if method == "account/usage/read" {
+		// mimiForceRefresh 是移动端与 agentd 的私有提示；上游 schema 没有 params，必须完整剥离。
+		delete(frame, "params")
+	} else {
+		frame["params"] = sanitized
+	}
 	rewritten, err := json.Marshal(frame)
 	if err != nil {
 		return nil, fmt.Errorf("重写 app-server 安全参数失败：%w", err)

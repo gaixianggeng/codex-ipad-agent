@@ -181,6 +181,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         await runtime.refreshAccountTokenUsage()
     }
 
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
+        await runtime.refreshAccountTokenUsage(forceRefresh: forceRefresh)
+    }
+
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
         try await runtime.threadGoal(threadID: threadID)
     }
@@ -527,6 +531,11 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
         await bundle.codex.refreshAccountTokenUsage()
+    }
+
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
+        // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
+        await bundle.codex.refreshAccountTokenUsage(forceRefresh: forceRefresh)
     }
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {

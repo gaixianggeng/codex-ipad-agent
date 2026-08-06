@@ -460,6 +460,10 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [])
         XCTAssertEqual(builder.accountUsageRead().method, "account/usage/read")
         XCTAssertNil(builder.accountUsageRead().params)
+        XCTAssertEqual(
+            builder.accountUsageRead(forceRefresh: true).params?.objectValue?["mimiForceRefresh"]?.boolValue,
+            true
+        )
 
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",

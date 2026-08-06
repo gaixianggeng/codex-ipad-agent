@@ -3,7 +3,7 @@ import os
 import UserNotifications
 
 extension SessionStore {
-    func refreshAccountTokenUsage() async {
+    func refreshAccountTokenUsage(forceRefresh: Bool = false) async {
         let hostScope = appStore.activeHostScope
         guard accountTokenUsageRefreshHostScope != hostScope else {
             return
@@ -26,7 +26,7 @@ extension SessionStore {
         guard !Task.isCancelled else { return }
         let fetch: AccountTokenUsageFetch
         do {
-            fetch = try await clientFactory().refreshAccountTokenUsage()
+            fetch = try await clientFactory().refreshAccountTokenUsage(forceRefresh: forceRefresh)
         } catch is CancellationError {
             return
         } catch {

@@ -444,7 +444,7 @@ struct SettingsView: View {
 
     private func refreshAccountUsage() async {
         async let codexQuota: Void = sessionStore.refreshCodexUsage()
-        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage()
+        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage(forceRefresh: true)
         if sessionStore.hasClaudeRuntimeChannel {
             await sessionStore.refreshClaudeUsage()
         }

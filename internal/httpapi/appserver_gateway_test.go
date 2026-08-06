@@ -1395,15 +1395,32 @@ func TestAppServerGatewayCachesAccountTokenUsageAcrossConnections(t *testing.T) 
 	}
 	assertNoUpstreamFrame(t, received)
 
+	// 用户点击刷新时必须绕过仍在 TTL 内的快照；私有提示不能泄露给严格校验的上游 schema。
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":3,"method":"account/usage/read","params":{"mimiForceRefresh":true}}`)); err != nil {
+		t.Fatal(err)
+	}
+	forcedResponse := readGatewayRaw(t, second)
+	if !bytes.Contains(forcedResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("强制刷新应返回真实上游快照：%s", forcedResponse)
+	}
+	forcedUpstream := readUpstreamFrame(t, received)
+	var forwarded map[string]json.RawMessage
+	if err := json.Unmarshal(forcedUpstream, &forwarded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := forwarded["params"]; ok || !bytes.Contains(forcedUpstream, []byte(`"id":3`)) {
+		t.Fatalf("强制刷新应转发到 upstream 且剥离私有 params：%s", forcedUpstream)
+	}
+
 	// TTL 过期后恢复真实上游读取，确保缓存不会永久冻结展示数据。
 	router.accountTokenUsageMu.Lock()
 	router.accountTokenUsageCachedAt = time.Now().Add(-2 * time.Hour)
 	router.accountTokenUsageMu.Unlock()
-	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":3,"method":"account/usage/read"}`)); err != nil {
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":4,"method":"account/usage/read"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_ = readGatewayRaw(t, second)
-	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"id":3`)) {
+	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"id":4`)) {
 		t.Fatalf("过期请求应重新转发到 upstream：%s", got)
 	}
 }
