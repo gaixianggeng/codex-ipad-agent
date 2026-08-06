@@ -72,7 +72,10 @@ func (p *appServerGatewayPolicy) cachedAccountTokenUsageResponse(requestPayload 
 }
 
 func (p *appServerGatewayPolicy) rememberAccountTokenUsageResponse(frame *appServerGatewayFrame, now time.Time) {
-	if p == nil || frame == nil || !gatewayFrameIsResponse(frame) {
+	if p == nil ||
+		normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
+		frame == nil ||
+		!gatewayFrameIsResponse(frame) {
 		return
 	}
 	pending, ok := p.consumePendingClientRequest(frame.ID)
