@@ -14,7 +14,7 @@
 
 维护者必须安排一个可观察、可停止的短维护窗口，按两个阶段执行：
 
-1. **窗口前备份与核对**：备份旧归档仓库 `gaixianggeng/mimi-remote` 的 Git refs，以及 `v0.1.0` 至 `v0.2.2` 的 tags、Releases、全部附件和 checksum；第二人复核清单后才允许进入窗口。
+1. **窗口前备份与核对**：备份旧归档仓库 `gaixianggeng/mimi-remote` 的 Git refs、仓库元数据与 PR 审查记录，以及 `v0.1.0` 至 `v0.2.2` 的 tags、Releases、全部附件和 checksum；第二人复核清单后才允许进入窗口。
 2. **窗口内切换身份**：确认本 PR 已合并且检查全绿后，删除旧归档仓库；立即把当前 `gaixianggeng/codex-ipad-agent` 改名为 `mimi-remote`；更新本地 `origin`，再逐项校验重定向、新 clone、Release、Actions、Homebrew 和 App Store 元数据。
 
 两个阶段都必须在确认点停下来。任何备份缺项、权限不明、Release 资产不完整或改名 API 失败，都应停止，不要继续发布新资产。
@@ -30,7 +30,7 @@ set -euo pipefail
 
 OLD_ARCHIVE_REPO="gaixianggeng/mimi-remote"
 BACKUP_ROOT="/secure/offline/mimi-remote-history-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP_ROOT/releases"
+mkdir -p "$BACKUP_ROOT/releases" "$BACKUP_ROOT/github/pulls"
 gh auth status
 
 # 备份历史仓库完整 refs，并生成可独立校验的 bundle。
@@ -38,6 +38,54 @@ gh repo clone "$OLD_ARCHIVE_REPO" "$BACKUP_ROOT/repository"
 git -C "$BACKUP_ROOT/repository" fetch --tags --force --prune
 git -C "$BACKUP_ROOT/repository" bundle create "$BACKUP_ROOT/mimi-remote-history.bundle" --all
 git -C "$BACKUP_ROOT/repository" tag --list --sort=version:refname
+
+# Git bundle 不包含 GitHub 上的 PR 正文、Review、评论和 CI 结果，删除仓库前单独导出。
+gh api "repos/$OLD_ARCHIVE_REPO" > "$BACKUP_ROOT/github/repository-api.json"
+gh api --paginate --slurp \
+  "repos/$OLD_ARCHIVE_REPO/issues?state=all&per_page=100" \
+  > "$BACKUP_ROOT/github/issues-and-pulls-api.json"
+
+# 先把枚举结果落盘并检查退出状态；不要用 process substitution 隐藏 gh pr list 失败。
+pr_numbers_file="$BACKUP_ROOT/github/pr-numbers.txt"
+gh pr list --repo "$OLD_ARCHIVE_REPO" --state all --limit 1000 \
+  --json number --jq '.[].number' > "$pr_numbers_file"
+if [[ ! -s "$pr_numbers_file" ]] \
+  || grep -Evq '^[0-9]+$' "$pr_numbers_file" \
+  || ! grep -Fxq '1' "$pr_numbers_file"; then
+  echo "PR 清单异常或缺少已知 PR #1，备份已停止。" >&2
+  exit 1
+fi
+
+while IFS= read -r pr_number; do
+  pr_dir="$BACKUP_ROOT/github/pulls/$pr_number"
+  mkdir -p "$pr_dir"
+
+  # view.json 保存正文、作者、merge 信息、reviews、comments、files、commits 和 statusCheckRollup。
+  gh pr view "$pr_number" --repo "$OLD_ARCHIVE_REPO" \
+    --json number,title,body,state,isDraft,author,createdAt,updatedAt,closedAt,mergedAt,mergedBy,url,baseRefName,baseRefOid,headRefName,headRefOid,mergeCommit,additions,deletions,changedFiles,labels,assignees,milestone,comments,reviews,latestReviews,reviewDecision,statusCheckRollup,files,commits \
+    > "$pr_dir/view.json"
+  gh api "repos/$OLD_ARCHIVE_REPO/pulls/$pr_number" > "$pr_dir/pull-api.json"
+  gh api --paginate --slurp \
+    "repos/$OLD_ARCHIVE_REPO/issues/$pr_number/comments?per_page=100" \
+    > "$pr_dir/issue-comments-api.json"
+  gh api --paginate --slurp \
+    "repos/$OLD_ARCHIVE_REPO/pulls/$pr_number/comments?per_page=100" \
+    > "$pr_dir/review-comments-api.json"
+  gh api --paginate --slurp \
+    "repos/$OLD_ARCHIVE_REPO/pulls/$pr_number/reviews?per_page=100" \
+    > "$pr_dir/reviews-api.json"
+  gh api --paginate --slurp \
+    "repos/$OLD_ARCHIVE_REPO/issues/$pr_number/events?per_page=100" \
+    > "$pr_dir/events-api.json"
+  gh api --paginate --slurp \
+    "repos/$OLD_ARCHIVE_REPO/pulls/$pr_number/commits?per_page=100" \
+    > "$pr_dir/commits-api.json"
+  gh api --paginate --slurp \
+    "repos/$OLD_ARCHIVE_REPO/pulls/$pr_number/files?per_page=100" \
+    > "$pr_dir/files-api.json"
+  gh pr diff "$pr_number" --repo "$OLD_ARCHIVE_REPO" --patch \
+    > "$pr_dir/changes.patch"
+done < "$pr_numbers_file"
 
 # 逐一核对历史仓库的全部已知 tag 和 Release。
 expected_tags=(v0.1.0 v0.1.1 v0.1.2 v0.1.3 v0.1.4 v0.2.0 v0.2.1 v0.2.2)
@@ -72,7 +120,7 @@ done
 rg -n -i 'checksum|sha256|\.sha256' "$BACKUP_ROOT/releases"
 ```
 
-**确认点 1（不得跳过）**：维护者和第二位复核者共同确认：8 个版本（`v0.1.0`–`v0.1.4`、`v0.2.0`–`v0.2.2`）的 tag 和 Release 均存在；`expected-tags.txt` 与 `actual-release-tags.txt` 无差异；每个 Release 的 `metadata.json` 和 `release-api.json` 已保存正文、目标提交、发布状态、时间、作者与附件元数据，附件及 checksum 与线上记录一致；`mimi-remote-history.bundle`、Release 目录和 `SHA256SUMS.txt` 已复制到离线介质并可独立读取。确认记录完成前，不得删除旧归档仓库。
+**确认点 1（不得跳过）**：维护者和第二位复核者共同确认：8 个版本（`v0.1.0`–`v0.1.4`、`v0.2.0`–`v0.2.2`）的 tag 和 Release 均存在；`expected-tags.txt` 与 `actual-release-tags.txt` 无差异；每个 Release 的 `metadata.json` 和 `release-api.json` 已保存正文、目标提交、发布状态、时间、作者与附件元数据，附件及 checksum 与线上记录一致；`github/repository-api.json`、`issues-and-pulls-api.json` 与每个 `github/pulls/<编号>/` 目录可读取，旧仓库当前唯一已合并 PR #1 的正文、作者、merge 信息、Review、评论、CI 结果、文件、提交与 patch 均已保存；`mimi-remote-history.bundle`、GitHub 元数据目录、Release 目录和 `SHA256SUMS.txt` 已复制到离线介质并可独立读取。确认记录完成前，不得删除旧归档仓库。
 
 ### 阶段二：维护窗口内删除、改名与切换
 
@@ -194,7 +242,7 @@ curl -fsSL \
 
 ## 风险与优化
 
-- 删除 `gaixianggeng/mimi-remote` 不可恢复；旧历史 Release 的 URL 和资产不会自动迁移。默认策略是只保留阶段一的离线备份；如果要把历史资产重新发布到新仓库，必须另行评估、审批和执行，不能在本窗口顺手补发。
+- 删除 `gaixianggeng/mimi-remote` 不可恢复；旧历史 Release、PR、Review 和 CI 记录的 URL 不会自动迁移。默认策略是只保留阶段一的离线备份；如果要把历史资产重新发布到新仓库，必须另行评估、审批和执行，不能在本窗口顺手补发。
 - `gaixianggeng/codex-ipad-agent` 改名后的旧完整源码 URL 通常会由 GitHub 重定向，但重定向不能替代本地 remote、Webhook、Deploy Key、Actions Secret、Branch protection、Issue/PR 自动化和 Homebrew Formula 的逐项核对。
 - 删除旧归档后若改名 API 失败，应停止发布并记录 GitHub 返回值；不要创建同名临时仓库、不要移动 tag、不要伪造 Release 资产。恢复路径只能由仓库所有者根据离线备份另行决策。
 - 仓库描述、Topics、Actions 和 App Store Connect 元数据属于独立外部状态；本 PR 只提供可执行清单，不代表这些状态已经更新。
