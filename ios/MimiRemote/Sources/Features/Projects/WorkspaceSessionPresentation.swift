@@ -12,12 +12,17 @@ struct WorkspaceRuntimeSessionPageState: Equatable {
     var nextCursor: String?
     var hasMore = false
     var hasLoadedFirstPage = false
+    private var canonicalSessionIDsBeforeFirstPage: Set<SessionID> = []
 
-    mutating func replace(with page: SessionsPage) {
+    mutating func replace(
+        with page: SessionsPage,
+        canonicalSessionIDsBeforeLoad: Set<SessionID>
+    ) {
         sessions = Self.mergedSessions([], page.sessions)
         nextCursor = page.nextCursor
         hasMore = page.hasMore
         hasLoadedFirstPage = true
+        canonicalSessionIDsBeforeFirstPage = canonicalSessionIDsBeforeLoad
     }
 
     mutating func append(_ page: SessionsPage) {
@@ -25,6 +30,19 @@ struct WorkspaceRuntimeSessionPageState: Equatable {
         nextCursor = page.nextCursor
         hasMore = page.hasMore
         hasLoadedFirstPage = true
+    }
+
+    func reconciledSessions(with canonicalSessions: [AgentSession]) -> [AgentSession] {
+        let canonicalByID = Dictionary(uniqueKeysWithValues: canonicalSessions.map { ($0.id, $0) })
+        let cachedSessionIDs = Set(sessions.map(\.id))
+        let refreshedPageMembers = sessions.map { canonicalByID[$0.id] ?? $0 }
+        let newlyObserved = canonicalSessions.filter { session in
+            !canonicalSessionIDsBeforeFirstPage.contains(session.id)
+                && !cachedSessionIDs.contains(session.id)
+        }
+        // cursor 与既有分页成员仍由 page state 持有；渲染时只用 canonical Store 刷新字段，
+        // 并补入首屏请求之后新观察到的会话，避免 WebSocket 更新被页面副本遮住。
+        return Self.mergedSessions(refreshedPageMembers, newlyObserved)
     }
 
     private static func mergedSessions(

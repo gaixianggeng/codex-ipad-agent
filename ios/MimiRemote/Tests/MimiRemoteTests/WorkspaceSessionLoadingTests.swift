@@ -102,13 +102,72 @@ extension ConversationDataFlowTests {
         )
         var state = WorkspaceRuntimeSessionPageState()
 
-        state.replace(with: SessionsPage(sessions: [first], nextCursor: "codex-next", hasMore: true))
+        state.replace(
+            with: SessionsPage(sessions: [first], nextCursor: "codex-next", hasMore: true),
+            canonicalSessionIDsBeforeLoad: [first.id]
+        )
         state.append(SessionsPage(sessions: [older, first], nextCursor: nil, hasMore: false))
 
         XCTAssertEqual(state.sessions.map(\.id), ["codex-first", "codex-older"])
         XCTAssertNil(state.nextCursor)
         XCTAssertFalse(state.hasMore)
         XCTAssertTrue(state.hasLoadedFirstPage)
+    }
+
+    func testWorkspaceRuntimeSessionPageReconcilesCanonicalUpdatesAndNewSessions() {
+        let projectID = "workspace-runtime-live-updates"
+        let cached = makeSession(
+            id: "cached-session",
+            projectID: projectID,
+            title: "旧标题",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let preexistingOutsidePage = makeSession(
+            id: "older-session",
+            projectID: projectID,
+            title: "已有旧会话",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        var state = WorkspaceRuntimeSessionPageState()
+        state.replace(
+            with: SessionsPage(sessions: [cached], nextCursor: "older", hasMore: true),
+            canonicalSessionIDsBeforeLoad: [cached.id, preexistingOutsidePage.id]
+        )
+
+        let refreshedCached = makeSession(
+            id: cached.id,
+            projectID: projectID,
+            title: "WebSocket 新标题",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 30)
+        )
+        let newlyObserved = makeSession(
+            id: "new-session",
+            projectID: projectID,
+            title: "刚创建的会话",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 40)
+        )
+
+        let presented = state.reconciledSessions(
+            with: [preexistingOutsidePage, refreshedCached, newlyObserved]
+        )
+
+        XCTAssertEqual(presented.map(\.id), [newlyObserved.id, cached.id])
+        XCTAssertEqual(presented.last?.title, "WebSocket 新标题")
+        XCTAssertEqual(presented.last?.status, "history")
+        XCTAssertEqual(state.nextCursor, "older", "canonical 对账不能破坏 Runtime 独立 cursor")
+        XCTAssertTrue(state.hasMore)
     }
 
     func testWorkspaceRuntimePageReturnsOnlyTheSelectedRuntime() async throws {

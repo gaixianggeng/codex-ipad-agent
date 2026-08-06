@@ -613,7 +613,7 @@ struct WorkspaceRootView: View {
                 && CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
                     == presentationKey.runtimeProvider
         }
-        let loadedSessions = cachedPageState?.sessions ?? storedRuntimeSessions
+        let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
         let loadState = sessionLoadState(for: presentationKey)
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
         return WorkspaceDetailView(
@@ -828,6 +828,18 @@ struct WorkspaceRootView: View {
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
+        let canonicalSessionIDsBeforeLoad = Set<SessionID>(
+            sessionStore.sessions(forProjectID: project.id).compactMap { session in
+                guard sessionStore.isListableSession(session),
+                      CodexAppServerSessionRuntime.normalizedRuntimeProvider(
+                          session.runtimeProvider ?? session.source
+                      ) == presentationKey.runtimeProvider
+                else {
+                    return nil
+                }
+                return session.id
+            }
+        )
         sessionLoadStates[presentationKey] = .loading
         do {
             let page = try await sessionStore.workspaceRuntimeSessionsPage(
@@ -849,7 +861,10 @@ struct WorkspaceRootView: View {
                 return
             }
             var nextState = WorkspaceRuntimeSessionPageState()
-            nextState.replace(with: page)
+            nextState.replace(
+                with: page,
+                canonicalSessionIDsBeforeLoad: canonicalSessionIDsBeforeLoad
+            )
             runtimeSessionPagesByKey[presentationKey] = nextState
             workspaceSessionVisibleLimitByKey[presentationKey] = SessionStore.initialSessionPageLimit
             sessionLoadStates[presentationKey] = .loaded
