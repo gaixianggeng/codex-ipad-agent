@@ -1847,6 +1847,35 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testUnifiedWorkbenchSidebarNavigationChrome() {
         let themeStore = makeThemeStore()
         let tokens = themeStore.tokens(for: .light)
+        let project = AgentProject(
+            id: "sidebar-monitor-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let needYou = makeSnapshotSession(
+            id: "sidebar-needs-you",
+            project: project,
+            title: "确认 MIM-104 交互细节",
+            status: SessionStatus.waitingForInput.rawValue,
+            preview: ""
+        )
+        let running = makeSnapshotSession(
+            id: "sidebar-running",
+            project: project,
+            title: "重新录制五档视觉快照",
+            status: SessionStatus.running.rawValue,
+            preview: "",
+            activeTurnID: "sidebar-turn",
+            updatedAt: Date().addingTimeInterval(-12 * 60)
+        )
+        let completed = makeSnapshotSession(
+            id: "sidebar-completed",
+            project: project,
+            title: "整理最新设计补充",
+            status: SessionStatus.completed.rawValue,
+            preview: "",
+            recencyAt: Date().addingTimeInterval(-3 * 60)
+        )
 
         let view = VStack(spacing: 0) {
             List {
@@ -1867,14 +1896,51 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     )
                 }
 
-                Section("最近") {
-                    Text("优化侧栏创建入口")
-                        .font(themeStore.uiFont(.subheadline, weight: .medium))
-                        .listRowBackground(Color.clear)
+                Section("需要你 1") {
+                    SessionSidebarMonitorRow(
+                        session: needYou,
+                        kind: .needYou,
+                        isSelected: false,
+                        isRecentlyCompleted: false,
+                        projectEmoji: "🐱",
+                        runtimeActivitySnapshot: nil
+                    )
+                    .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowBackground(Color.clear)
+                }
+
+                Section("进行中 1") {
+                    SessionSidebarMonitorRow(
+                        session: running,
+                        kind: .running,
+                        isSelected: true,
+                        isRecentlyCompleted: false,
+                        projectEmoji: nil,
+                        runtimeActivitySnapshot: RuntimeActivitySnapshot(
+                            turnStartedAt: Date().addingTimeInterval(-12 * 60),
+                            lastActivityAt: Date()
+                        )
+                    )
+                    .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowBackground(Color.clear)
+                }
+
+                Section("刚完成 1") {
+                    SessionSidebarMonitorRow(
+                        session: completed,
+                        kind: .justCompleted,
+                        isSelected: false,
+                        isRecentlyCompleted: true,
+                        projectEmoji: nil,
+                        runtimeActivitySnapshot: nil
+                    )
+                    .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowBackground(Color.clear)
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 34)
             .frame(maxHeight: .infinity)
 
             // 直接渲染生产组件，避免 NavigationSplitView 在测试宿主中自动折叠侧栏。
@@ -1956,7 +2022,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         return ThemeStore(defaults: defaults)
     }
 
-    /// 用真实 SessionListView 锁住日期分区容器、三档密度、compact chrome 和辅助功能回退。
+    /// 用真实 SessionListView 锁住扁平日期列表、项目锚点、三档密度与辅助功能回退。
     private func makeSessionLibrarySnapshot(
         width: CGFloat,
         height: CGFloat,
@@ -1967,6 +2033,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let appStore = makeSnapshotAppStore()
         let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
+        let appearanceDefaults = UserDefaults(
+            suiteName: "ConversationSnapshotTests.WorkspaceAppearance.\(UUID().uuidString)"
+        )!
+        let workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: appearanceDefaults)
         let sessionStore = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
@@ -1990,69 +2060,116 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
         }
 
+        workspaceAppearanceStore.setCustomEmoji(
+            "🐱",
+            profileID: appStore.activeHostScope.profileID,
+            projectID: project.id
+        )
+        workspaceAppearanceStore.setCustomEmoji(
+            "🎨",
+            profileID: appStore.activeHostScope.profileID,
+            projectID: secondProject.id
+        )
+
         let active = makeSnapshotSession(
             id: "session-list-active",
             project: project,
             title: "正在整理 **MIM-104** 会话列表",
             status: SessionStatus.running.rawValue,
-            preview: "",
+            preview: "同步核对侧边栏状态和扁平列表",
             activeTurnID: "turn-active",
             recencyAt: localDate(dayOffset: 0, hour: 10, minute: 18)
         )
         let pinned = makeSnapshotSession(
             id: "session-list-pinned",
-            project: secondProject,
+            project: project,
             title: "固定在顶部的发布检查",
             status: SessionStatus.history.rawValue,
-            preview: "",
+            preview: "检查真机安装与回归结果",
             runtimeProvider: "claude"
         )
-        let todaySession = makeSnapshotSession(
-            id: "session-list-today",
-            project: project,
-            title: "## 宽屏列对齐\n并压平标题换行",
-            status: SessionStatus.history.rawValue,
-            preview: "",
-            recencyAt: localDate(dayOffset: 0, hour: 9, minute: 5)
-        )
-        let yesterdaySession = makeSnapshotSession(
-            id: "session-list-yesterday",
-            project: secondProject,
-            title: "检查 compact 顶栏与底部安全区",
-            status: SessionStatus.failed.rawValue,
-            preview: "",
-            runtimeProvider: "claude",
-            recencyAt: localDate(dayOffset: -1, hour: 18, minute: 25)
-        )
-        let secondTodaySession = makeSnapshotSession(
-            id: "session-list-today-second",
-            project: secondProject,
-            title: "同一日期容器内使用发丝线分隔",
-            status: SessionStatus.history.rawValue,
-            preview: "",
-            runtimeProvider: "claude",
-            recencyAt: localDate(dayOffset: 0, hour: 8, minute: 20)
-        )
-        let earlierSession = makeSnapshotSession(
-            id: "session-list-earlier",
-            project: project,
-            title: "保留 Inspector 中的完整路径",
-            status: SessionStatus.history.rawValue,
-            preview: ""
-        )
+        let historyRows: [AgentSession] = [
+            makeSnapshotSession(
+                id: "session-list-today-1",
+                project: project,
+                title: "## 宽屏列对齐\n并压平标题换行",
+                status: SessionStatus.history.rawValue,
+                preview: "预览紧跟标题，右侧只保留紧凑元数据",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 55)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-2",
+                project: project,
+                title: "恢复侧边栏最近会话",
+                status: SessionStatus.completed.rawValue,
+                preview: "按需要你、进行中、刚完成、置顶和最近分层",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 42)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-3",
+                project: project,
+                title: "检查 project anchor 连续显示",
+                status: SessionStatus.history.rawValue,
+                preview: "同一项目后续行保留空槽，不重复 Emoji",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 30)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-4",
+                project: project,
+                title: "清理 Markdown 与换行",
+                status: SessionStatus.history.rawValue,
+                preview: "**标题** 和预览都保持单行可扫读",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 18)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-5",
+                project: project,
+                title: "验证发丝分隔线",
+                status: SessionStatus.history.rawValue,
+                preview: "分隔线从标题区域开始，组末不再绘制",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 6)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-other-project",
+                project: secondProject,
+                title: "生成小红书视觉素材",
+                status: SessionStatus.history.rawValue,
+                preview: "项目切换时立即出现新的图标锚点",
+                runtimeProvider: "claude",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 54)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-7",
+                project: project,
+                title: "检查 compact 顶栏与安全区",
+                status: SessionStatus.failed.rawValue,
+                preview: "窄屏回退两行布局，不使用固定列宽",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 42)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-8",
+                project: project,
+                title: "保留 Inspector 完整路径",
+                status: SessionStatus.history.rawValue,
+                preview: "主列表只显示项目名称，详情仍有完整目录",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 30)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-9",
+                project: project,
+                title: "完成 MIM-104 快照验收",
+                status: SessionStatus.history.rawValue,
+                preview: "使用 90% 同项目的实机数据分布验证密度",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 18)
+            ),
+        ]
 
         sessionStore.projects = [project, secondProject]
         sessionStore.sidebarProjects = [project, secondProject]
-        sessionStore.sessions = [
-            active,
-            pinned,
-            todaySession,
-            secondTodaySession,
-            yesterdaySession,
-            earlierSession,
-        ]
+        sessionStore.sessions = [active, pinned] + historyRows
         sessionStore.pinnedSessionIDs = [pinned.id]
-        sessionStore.selectedSessionID = todaySession.id
+        sessionStore.setUnreadHistorySessionIDs([historyRows[1].id, historyRows[5].id])
+        sessionStore.selectedSessionID = historyRows[0].id
 
         return NavigationStack {
             SessionListView(
@@ -2065,6 +2182,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(appStore)
         .environmentObject(sessionStore)
         .environmentObject(themeStore)
+        .environmentObject(workspaceAppearanceStore)
         .environment(\.colorScheme, colorScheme)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
         .frame(width: width, height: height)

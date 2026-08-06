@@ -121,6 +121,94 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(session.title, original)
     }
 
+    func testPreviewDisplayTextFlattensMarkdownWithoutMutatingSession() {
+        let original = " **A preview**\n> `second`\t  line "
+        let session = makeSession(id: "preview", preview: original)
+
+        XCTAssertEqual(SessionListPresentation.previewDisplayText(for: session), "A preview second line")
+        XCTAssertEqual(SessionListPresentation.previewDisplayText(original), "A preview second line")
+        XCTAssertEqual(session.preview, original)
+    }
+
+    func testSidebarSectionsUsePriorityOrderAndStableDeduplication() {
+        let approval = ApprovalSummary(
+            id: "approval",
+            title: "Approve command",
+            kind: "command",
+            count: nil
+        )
+        let inputRequest = AgentUserInputRequest(
+            id: "input",
+            threadID: "need-input",
+            turnID: nil,
+            itemID: "item",
+            questions: []
+        )
+        let needApproval = makeSession(
+            id: "need-approval",
+            status: SessionStatus.waitingForApproval.rawValue,
+            pendingApproval: approval
+        )
+        let needInput = makeSession(
+            id: "need-input",
+            status: SessionStatus.waitingForInput.rawValue,
+            pendingUserInput: inputRequest
+        )
+        let running = makeSession(id: "running", status: SessionStatus.running.rawValue)
+        let waitingWithoutPayload = makeSession(
+            id: "waiting-without-payload",
+            status: SessionStatus.waitingForInput.rawValue
+        )
+        let justCompleted = makeSession(id: "completed")
+        let pinned = makeSession(id: "pinned")
+        let recent = makeSession(id: "recent")
+        let duplicatePinned = makeSession(id: "pinned", status: SessionStatus.running.rawValue)
+
+        let sections = SessionListPresentation.sidebarSections(
+            sessions: [needApproval, needInput, running, waitingWithoutPayload, justCompleted, pinned, recent, duplicatePinned],
+            pinnedIDs: Set(["need-approval", "pinned"]),
+            unreadIDs: Set(["completed", "running"])
+        )
+
+        XCTAssertEqual(
+            sections.map(\.kind),
+            [.needYou, .running, .justCompleted, .pinned, .recent]
+        )
+        XCTAssertEqual(Set(sections.map(\.kind)).count, sections.count)
+        XCTAssertEqual(sections.map(\.id), sections.map { $0.kind.rawValue })
+        XCTAssertEqual(sections[0].sessions.map(\.id), ["need-approval", "need-input"])
+        XCTAssertEqual(sections[1].sessions.map(\.id), ["running", "waiting-without-payload"])
+        XCTAssertEqual(sections[2].sessions.map(\.id), ["completed"])
+        XCTAssertEqual(sections[3].sessions.map(\.id), ["pinned"])
+        XCTAssertEqual(sections[4].sessions.map(\.id), ["recent"])
+        XCTAssertEqual(sections.flatMap(\.sessions).map(\.id), [
+            "need-approval", "need-input", "running", "waiting-without-payload", "completed", "pinned", "recent",
+        ])
+    }
+
+    func testSidebarJustCompletedKeepsFiveAndReturnsOverflowAfterDeduplication() throws {
+        let completed = (0..<7).map { makeSession(id: "completed-\($0)") }
+        let sessions = completed + [completed[2]]
+        let sections = SessionListPresentation.sidebarSections(
+            sessions,
+            unreadIDs: Set(completed.map(\.id))
+        )
+
+        let section = try XCTUnwrap(sections.first { $0.kind == .justCompleted })
+        XCTAssertEqual(section.sessions.map(\.id), (0..<5).map { "completed-\($0)" })
+        XCTAssertEqual(section.overflowCount, 2)
+        XCTAssertEqual(section.overflow, 2)
+    }
+
+    func testSidebarRecentIsFallbackWhenAllEarlierGroupsAreEmpty() {
+        let sessions = (0..<10).map { makeSession(id: "recent-\($0)") }
+        let sections = SessionListPresentation.sidebarSections(sessions)
+
+        XCTAssertEqual(sections.map(\.kind), [.recent])
+        XCTAssertEqual(sections[0].sessions.map(\.id), (0..<8).map { "recent-\($0)" })
+        XCTAssertEqual(sections[0].overflowCount, 0)
+    }
+
     func testDirectoryTailPrefersDirFallsBackToProjectAndHandlesTrailingSlashes() {
         XCTAssertEqual(
             SessionListPresentation.directoryTail(
@@ -174,9 +262,13 @@ final class SessionListPresentationTests: XCTestCase {
         project: String = "Project",
         dir: String = "/tmp/project",
         title: String? = nil,
+        preview: String? = nil,
+        status: String = SessionStatus.history.rawValue,
         createdAt: Date? = nil,
         updatedAt: Date? = nil,
-        recencyAt: Date? = nil
+        recencyAt: Date? = nil,
+        pendingApproval: ApprovalSummary? = nil,
+        pendingUserInput: AgentUserInputRequest? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -184,12 +276,15 @@ final class SessionListPresentationTests: XCTestCase {
             project: project,
             dir: dir,
             title: title ?? id,
-            status: SessionStatus.history.rawValue,
+            status: status,
             source: "codex",
             resumeID: nil,
             createdAt: createdAt,
             updatedAt: updatedAt,
-            recencyAt: recencyAt
+            recencyAt: recencyAt,
+            preview: preview,
+            pendingApproval: pendingApproval,
+            pendingUserInput: pendingUserInput
         )
     }
 

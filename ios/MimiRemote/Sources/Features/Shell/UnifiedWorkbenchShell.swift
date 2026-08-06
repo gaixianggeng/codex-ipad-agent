@@ -77,6 +77,163 @@ enum WorkbenchNavigationEvent: Equatable {
     case sessionSelectionFinished(SessionID)
 }
 
+/// 侧边栏是任务监视器，不重复主列表的路径和完整状态；形状先表达优先级，
+/// 文字只补充“为什么需要回来”与紧凑时间，灰阶和窄栏下仍可扫读。
+struct SessionSidebarMonitorRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let session: AgentSession
+    let kind: SessionSidebarSectionKind
+    let isSelected: Bool
+    let isRecentlyCompleted: Bool
+    let projectEmoji: String?
+    let runtimeActivitySnapshot: RuntimeActivitySnapshot?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 6) {
+            stateMarker(tokens: tokens)
+                .frame(width: 12, height: 12)
+
+            if let projectEmoji {
+                Text(projectEmoji)
+                    .font(.system(size: 10))
+                    .frame(width: 18, height: 18)
+                    .background(tokens.elevatedSurface.opacity(0.82), in: WorkspaceIconMeeGoShape())
+                    .overlay {
+                        WorkspaceIconMeeGoShape()
+                            .stroke(tokens.border.opacity(0.52), lineWidth: 0.5)
+                    }
+                    .accessibilityHidden(true)
+            }
+
+            Text(SessionListPresentation.titleDisplayText(for: session))
+                .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+
+            Spacer(minLength: 4)
+            detail(tokens: tokens)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(rowFill(tokens: tokens))
+        }
+        .overlay(alignment: .leading) {
+            if isSelected {
+                Capsule()
+                    .fill(tokens.primaryAction)
+                    .frame(width: 3)
+                    .padding(.vertical, 7)
+                    .padding(.leading, 1)
+            }
+        }
+        .animation(
+            MimiMotion.stateTransition.animation(reduceMotion: reduceMotion),
+            value: isRecentlyCompleted
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func stateMarker(tokens: ThemeTokens) -> some View {
+        switch kind {
+        case .needYou:
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(tokens.warning.opacity(0.20))
+                .overlay {
+                    Image(systemName: "exclamationmark")
+                        .font(themeStore.uiFont(size: 7, weight: .bold))
+                        .foregroundStyle(tokens.warning)
+                }
+                .accessibilityLabel(L10n.text("ui.needs_you"))
+        case .running:
+            Circle()
+                .trim(from: 0.12, to: 0.88)
+                .stroke(
+                    tokens.primaryAction,
+                    style: StrokeStyle(lineWidth: 1.6, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+                .padding(1)
+                .accessibilityLabel(L10n.text("ui.in_progress"))
+        case .justCompleted:
+            Circle()
+                .fill(tokens.primaryAction)
+                .frame(width: 7, height: 7)
+                .accessibilityLabel(L10n.text("ui.just_completed"))
+        case .pinned, .recent:
+            Color.clear
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private func detail(tokens: ThemeTokens) -> some View {
+        Group {
+            switch kind {
+            case .needYou:
+                Text(
+                    session.pendingApproval != nil
+                        ? L10n.text("ui.pending_approval")
+                        : L10n.text("ui.waiting_for_input")
+                )
+            case .running:
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(runningDuration(at: context.date))
+                }
+            case .justCompleted, .pinned, .recent:
+                if let date = session.recencyAt ?? session.updatedAt ?? session.createdAt {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(compactRelativeDuration(from: date, to: context.date))
+                    }
+                }
+            }
+        }
+        .font(themeStore.uiFont(size: 10.5, weight: .regular))
+        .foregroundStyle(tokens.tertiaryText)
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func rowFill(tokens: ThemeTokens) -> Color {
+        if isRecentlyCompleted {
+            return tokens.success.opacity(colorScheme == .dark ? 0.18 : 0.12)
+        }
+        if isSelected {
+            return tokens.selectionFill
+        }
+        return .clear
+    }
+
+    private func runningDuration(at now: Date) -> String {
+        let start = runtimeActivitySnapshot?.turnStartedAt
+            ?? session.updatedAt
+            ?? session.createdAt
+            ?? now
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        if seconds < 60 { return "<1m" }
+        if seconds < 3_600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3_600)h"
+    }
+
+    private func compactRelativeDuration(from date: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "<1m" }
+        if seconds < 3_600 { return "\(seconds / 60)m" }
+        if seconds < 86_400 { return "\(seconds / 3_600)h" }
+        return "\(seconds / 86_400)d"
+    }
+}
+
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
@@ -107,6 +264,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
+    @StateObject private var sidebarHighlightCoordinator = SessionSidebarHighlightCoordinator()
     @State private var didApplyDebugLaunchRoute = false
     @State private var selectedRelatedSubagent: SessionContextSubagent?
     @State private var relatedSubagentParentID: SessionID?
@@ -159,6 +317,13 @@ struct UnifiedWorkbenchShell: View {
                 restoreFloatingSidebarVisibilityIfNeeded()
                 synchronizeNavigation(for: layout)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
+                synchronizeSidebarLifecycle()
+            }
+            .onChange(of: sidebarLifecycleObservations) { _, _ in
+                synchronizeSidebarLifecycle()
+            }
+            .onChange(of: appStore.activeHostScope.profileID) { _, _ in
+                synchronizeSidebarLifecycle()
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
                 handleLayoutModeChange(
@@ -738,19 +903,39 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
 
-            if !sessionStore.activeSessions.isEmpty {
-                Section(L10n.text("ui.in_progress")) {
-                    ForEach(sessionStore.activeSessions) { session in
-                        sidebarSessionLink(session, layout: layout)
+            ForEach(sidebarMonitorSections) { section in
+                Section {
+                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
+                        let previousProjectID = index > section.sessions.startIndex
+                            ? section.sessions[index - 1].projectID
+                            : nil
+                        sidebarSessionLink(
+                            session,
+                            kind: section.kind,
+                            showsProjectAnchor: sidebarUsesProjectAnchors
+                                && previousProjectID != session.projectID,
+                            layout: layout
+                        )
                     }
-                }
-            }
 
-            if !sidebarPinnedSessions.isEmpty {
-                Section(L10n.text("ui.pinned")) {
-                    ForEach(sidebarPinnedSessions) { session in
-                        sidebarSessionLink(session, layout: layout)
+                    if section.overflowCount > 0 {
+                        Button {
+                            open(.sessions, layout: layout)
+                        } label: {
+                            Text(L10n.format("ui.more_sessions_count", section.overflowCount))
+                                .font(themeStore.uiFont(size: 11, weight: .medium))
+                                .foregroundStyle(tokens.secondaryText)
+                                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(.init(top: 0, leading: 36, bottom: 0, trailing: 10))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
+                } header: {
+                    Text("\(sidebarSectionTitle(section.kind)) \(section.sessions.count + section.overflowCount)")
+                        .textCase(nil)
                 }
             }
         }
@@ -763,7 +948,7 @@ struct UnifiedWorkbenchShell: View {
                 : 0,
             for: .scrollContent
         )
-        .environment(\.defaultMinListRowHeight, 38)
+        .environment(\.defaultMinListRowHeight, 34)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
     }
@@ -802,13 +987,22 @@ struct UnifiedWorkbenchShell: View {
     }
 
     @ViewBuilder
-    private func sidebarSessionLink(_ session: AgentSession, layout: WorkbenchLayout) -> some View {
+    private func sidebarSessionLink(
+        _ session: AgentSession,
+        kind: SessionSidebarSectionKind,
+        showsProjectAnchor: Bool,
+        layout: WorkbenchLayout
+    ) -> some View {
         Group {
             if layout.usesFloatingSidebarSurface {
                 Button {
                     openSession(session, source: .sessions, layout: layout)
                 } label: {
-                    sidebarSessionRow(session)
+                    sidebarSessionRow(
+                        session,
+                        kind: kind,
+                        showsProjectAnchor: showsProjectAnchor
+                    )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -819,7 +1013,11 @@ struct UnifiedWorkbenchShell: View {
                 )
             } else {
                 NavigationLink(value: AppDestination.session(session.id)) {
-                    sidebarSessionRow(session)
+                    sidebarSessionRow(
+                        session,
+                        kind: kind,
+                        showsProjectAnchor: showsProjectAnchor
+                    )
                 }
             }
         }
@@ -830,30 +1028,74 @@ struct UnifiedWorkbenchShell: View {
         )
         .sessionRowActions(session)
         .sessionRowSwipeActions(session)
-        .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
 
-    private func sidebarSessionRow(_ session: AgentSession) -> some View {
-        SessionIndexRow(
+    private func sidebarSessionRow(
+        _ session: AgentSession,
+        kind: SessionSidebarSectionKind,
+        showsProjectAnchor: Bool
+    ) -> some View {
+        SessionSidebarMonitorRow(
             session: session,
-            foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+            kind: kind,
             isSelected: navigationState.selection == .session(session.id),
-            isPinned: sessionStore.isSessionPinned(session.id),
-            isArchived: sessionStore.isSessionArchived(session.id),
-            reminder: sessionStore.sessionReminder(for: session.id),
-            isObserving: sessionStore.isSessionObserving(session),
-            isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
-            isUnread: sessionStore.isHistorySessionUnread(session),
-            density: .rail
+            isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
+            projectEmoji: showsProjectAnchor
+                ? workspaceAppearanceStore.emoji(
+                    profileID: appStore.activeHostScope.profileID,
+                    projectID: session.projectID
+                )
+                : nil,
+            runtimeActivitySnapshot: sessionStore.runtimeActivitySnapshot(for: session.id)
         )
     }
 
-    /// 浮动侧栏只保留需要用户回来的对象；进行中的置顶会话已在上一组展示，避免重复。
-    private var sidebarPinnedSessions: [AgentSession] {
-        sessionStore.sessionLibrarySessions.filter { session in
-            sessionStore.isSessionPinned(session.id) && !session.isRunning && !session.isLocalDraft
+    private var sidebarMonitorSections: [SessionSidebarSection] {
+        let chronologicallySortedSessions = sessionStore.sortedAllSessions.isEmpty
+            ? SessionStore.sortedSessions(sessionStore.sessionLibrarySessions)
+            : sessionStore.sortedAllSessions
+        return SessionListPresentation.sidebarSections(
+            sessions: chronologicallySortedSessions,
+            pinnedIDs: sessionStore.pinnedSessionIDs,
+            unreadIDs: sessionStore.unreadHistorySessionIDs
+        )
+    }
+
+    private var sidebarUsesProjectAnchors: Bool {
+        Set(sidebarMonitorSections.flatMap(\.sessions).map(\.projectID)).count > 1
+    }
+
+    private var sidebarLifecycleObservations: [SessionLifecycleObservation] {
+        sessionStore.sessions.map { session in
+            SessionLifecycleObservation(
+                session: session,
+                foregroundActivity: sessionStore.foregroundActivity(for: session.id)
+            )
+        }
+    }
+
+    private func synchronizeSidebarLifecycle() {
+        sidebarHighlightCoordinator.observe(
+            profileID: appStore.activeHostScope.profileID,
+            observations: sidebarLifecycleObservations
+        )
+    }
+
+    private func sidebarSectionTitle(_ kind: SessionSidebarSectionKind) -> String {
+        switch kind {
+        case .needYou:
+            return L10n.text("ui.needs_you")
+        case .running:
+            return L10n.text("ui.in_progress")
+        case .justCompleted:
+            return L10n.text("ui.just_completed")
+        case .pinned:
+            return L10n.text("ui.pinned")
+        case .recent:
+            return L10n.text("ui.recently")
         }
     }
 

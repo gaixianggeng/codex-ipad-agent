@@ -1,6 +1,6 @@
 import Foundation
 
-/// 历史会话列表使用的日期桶。`displayOrder` 是稳定的 UI 顺序，调用方不需要依赖枚举声明顺序。
+/// 历史会话列表使用的日期桶。`displayOrder` 是稳定的扁平日期列表顺序，调用方不需要依赖枚举声明顺序。
 enum SessionHistoryDateBucket: CaseIterable, Equatable, Hashable, Sendable {
     case today
     case yesterday
@@ -8,7 +8,7 @@ enum SessionHistoryDateBucket: CaseIterable, Equatable, Hashable, Sendable {
     case thisMonth
     case earlier
 
-    /// 分区卡片按“近到远”展示；空桶由分组 helper 过滤掉。
+    /// 日期列表按“近到远”展示；空桶由分组 helper 过滤掉。
     static let displayOrder: [SessionHistoryDateBucket] = [
         .today,
         .yesterday,
@@ -28,6 +28,50 @@ struct SessionHistoryDateGroup: Equatable, Hashable, Identifiable {
     var id: SessionHistoryDateBucket { bucket }
 }
 
+/// 侧边栏五类会话的稳定身份；rawValue 是跨刷新保持不变的 section id。
+enum SessionSidebarSectionKind: String, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
+    case needYou = "need_you"
+    case running
+    case justCompleted = "just_completed"
+    case pinned
+    case recent
+
+    static let displayOrder: [SessionSidebarSectionKind] = [
+        .needYou,
+        .running,
+        .justCompleted,
+        .pinned,
+        .recent,
+    ]
+
+    static var allCases: [SessionSidebarSectionKind] { displayOrder }
+
+    var id: String { rawValue }
+}
+
+/// 侧边栏一组纯展示数据。输入排序由调用方决定，helper 只做稳定去重和优先级归类。
+struct SessionSidebarSection: Equatable, Hashable, Identifiable {
+    let kind: SessionSidebarSectionKind
+    let sessions: [AgentSession]
+    /// 目前只有 justCompleted 会产生溢出数量；其它组固定为 0。
+    let overflowCount: Int
+
+    init(
+        kind: SessionSidebarSectionKind,
+        sessions: [AgentSession],
+        overflowCount: Int = 0
+    ) {
+        self.kind = kind
+        self.sessions = sessions
+        self.overflowCount = max(0, overflowCount)
+    }
+
+    var id: String { kind.id }
+
+    /// 兼容调用方更短的命名，同时保留 overflowCount 的明确含义。
+    var overflow: Int { overflowCount }
+}
+
 /// 会话列表需要的纯展示计算，避免 SwiftUI View 同时承担日期和字符串规则。
 enum SessionListPresentation {
     /// 按历史时间将会话放入固定日期桶；空桶不返回，桶内保持输入顺序。
@@ -43,7 +87,7 @@ enum SessionListPresentation {
             sessionsByBucket[bucket, default: []].append(session)
         }
 
-        // 遍历固定顺序而不是字典顺序，确保分区卡片不会随进程或哈希种子变化。
+        // 遍历固定顺序而不是字典顺序，确保扁平日期列表不会随进程或哈希种子变化。
         return SessionHistoryDateBucket.displayOrder.compactMap { bucket in
             guard let sessions = sessionsByBucket[bucket], !sessions.isEmpty else { return nil }
             return SessionHistoryDateGroup(bucket: bucket, sessions: sessions)
@@ -130,6 +174,16 @@ enum SessionListPresentation {
         displayTitle(for: session)
     }
 
+    /// 预览沿用标题的单行 Markdown 清洗规则；只返回副本，不修改 session.preview。
+    static func previewDisplayText(for session: AgentSession) -> String {
+        displayTitle(session.preview ?? "")
+    }
+
+    /// 无会话模型时的预览清洗入口，nil 与空字符串都稳定回退为空文本。
+    static func previewDisplayText(_ preview: String?) -> String {
+        displayTitle(preview ?? "")
+    }
+
     /// 优先展示 dir 的末段；dir 为空时回退 project。路径无法拆出末段时返回原选择值。
     static func directoryTail(for session: AgentSession) -> String {
         let normalizedDir = session.dir.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -158,6 +212,81 @@ enum SessionListPresentation {
         directoryTail(for: session)
     }
 
+    /// 按“需要你 → 运行中 → 刚完成 → 置顶 → 最近”建立扁平侧边栏列表。
+    /// 输入已按时间排序时不会重新排序；重复 ID 只保留第一次出现的会话。
+    static func sidebarSections(
+        _ sessions: [AgentSession],
+        pinnedIDs: Set<SessionID> = [],
+        unreadIDs: Set<SessionID> = [],
+        justCompletedLimit: Int = 5,
+        recentLimit: Int = 8
+    ) -> [SessionSidebarSection] {
+        var unclaimed = stableUniqueSessions(sessions)
+
+        func consume(where predicate: (AgentSession) -> Bool) -> [AgentSession] {
+            var consumed: [AgentSession] = []
+            var remaining: [AgentSession] = []
+            consumed.reserveCapacity(unclaimed.count)
+            remaining.reserveCapacity(unclaimed.count)
+
+            for session in unclaimed {
+                if predicate(session) {
+                    consumed.append(session)
+                } else {
+                    remaining.append(session)
+                }
+            }
+            unclaimed = remaining
+            return consumed
+        }
+
+        let needYou = consume { session in
+            session.pendingApproval != nil
+                || session.pendingUserInput != nil
+        }
+        let running = consume { $0.isRunning }
+        let unread = consume { session in
+            !session.isLocalDraft && unreadIDs.contains(session.id)
+        }
+        let visibleJustCompleted = Array(unread.prefix(max(0, justCompletedLimit)))
+        let justCompletedOverflow = max(0, unread.count - visibleJustCompleted.count)
+        let pinned = consume { pinnedIDs.contains($0.id) }
+        let recent = Array(unclaimed.prefix(max(0, recentLimit)))
+
+        var sections: [SessionSidebarSection] = []
+        sections.reserveCapacity(SessionSidebarSectionKind.displayOrder.count)
+        appendSection(.needYou, sessions: needYou, to: &sections)
+        appendSection(.running, sessions: running, to: &sections)
+        appendSection(
+            .justCompleted,
+            sessions: visibleJustCompleted,
+            overflowCount: justCompletedOverflow,
+            to: &sections
+        )
+        appendSection(.pinned, sessions: pinned, to: &sections)
+
+        // recent 不依赖其它分组存在；因此前组全空时仍会展示第一批最近会话。
+        appendSection(.recent, sessions: recent, to: &sections)
+        return sections
+    }
+
+    /// 具名参数入口，供 View 直接表达“侧边栏输入会话”。
+    static func sidebarSections(
+        sessions: [AgentSession],
+        pinnedIDs: Set<SessionID> = [],
+        unreadIDs: Set<SessionID> = [],
+        justCompletedLimit: Int = 5,
+        recentLimit: Int = 8
+    ) -> [SessionSidebarSection] {
+        sidebarSections(
+            sessions,
+            pinnedIDs: pinnedIDs,
+            unreadIDs: unreadIDs,
+            justCompletedLimit: justCompletedLimit,
+            recentLimit: recentLimit
+        )
+    }
+
     private static func stripLeadingMarkdown(from line: String) -> String {
         var result = line
 
@@ -172,5 +301,32 @@ enum SessionListPresentation {
         }
 
         return result
+    }
+
+    private static func stableUniqueSessions(_ sessions: [AgentSession]) -> [AgentSession] {
+        var seenIDs: Set<SessionID> = []
+        var unique: [AgentSession] = []
+        unique.reserveCapacity(sessions.count)
+
+        for session in sessions where seenIDs.insert(session.id).inserted {
+            unique.append(session)
+        }
+        return unique
+    }
+
+    private static func appendSection(
+        _ kind: SessionSidebarSectionKind,
+        sessions: [AgentSession],
+        overflowCount: Int = 0,
+        to sections: inout [SessionSidebarSection]
+    ) {
+        guard !sessions.isEmpty else { return }
+        sections.append(
+            SessionSidebarSection(
+                kind: kind,
+                sessions: sessions,
+                overflowCount: overflowCount
+            )
+        )
     }
 }

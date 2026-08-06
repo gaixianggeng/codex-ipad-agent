@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum SessionIndexRowDensity {
+enum SessionIndexRowDensity: Equatable {
     case compact
     case table
     case rail
@@ -8,8 +8,8 @@ enum SessionIndexRowDensity {
     var minimumHeight: CGFloat {
         switch self {
         case .compact: 44
-        case .table: 40
-        case .rail: 38
+        case .table: 60
+        case .rail: 34
         }
     }
 
@@ -24,7 +24,7 @@ enum SessionIndexRowDensity {
     var titleFontSize: CGFloat {
         switch self {
         case .compact: 14
-        case .table: 13
+        case .table: 15
         case .rail: 13
         }
     }
@@ -32,7 +32,7 @@ enum SessionIndexRowDensity {
     var metadataFontSize: CGFloat {
         switch self {
         case .compact: 10
-        case .table: 11
+        case .table: 11.5
         case .rail: 9
         }
     }
@@ -409,9 +409,9 @@ struct SessionListView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
     @State private var selectedWorkspaceID = "all"
@@ -501,7 +501,8 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
-        // 日期分区本身就是唯一卡片容器；移除系统行距后，组内只保留自定义发丝分隔线。
+        .listSectionSpacing(12)
+        // 最新设计把日期恢复成轻量粘性标题，正文保持完全扁平；行距与分隔线由行组件统一控制。
         .listRowSpacing(0)
         .scrollContentBackground(.hidden)
         .background(tokens.background.ignoresSafeArea())
@@ -834,10 +835,10 @@ struct SessionListView: View {
         tokens: ThemeTokens
     ) -> some View {
         ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-            let position = SessionSectionRowPosition(
-                isFirst: index == sessions.startIndex,
-                isLast: index == sessions.index(before: sessions.endIndex)
-            )
+            let previousProjectID = index > sessions.startIndex
+                ? sessions[index - 1].projectID
+                : nil
+            let startsProjectRun = previousProjectID != session.projectID
 
             Button {
                 keyboardSelectionID = nil
@@ -855,7 +856,14 @@ struct SessionListView: View {
                     isUnread: sessionStore.isHistorySessionUnread(session),
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    drawsSelectionBackground: false,
+                    projectAnchorEmoji: startsProjectRun
+                        ? workspaceAppearanceStore.emoji(
+                            profileID: appStore.activeHostScope.profileID,
+                            projectID: session.projectID
+                        )
+                        : nil,
+                    reservesProjectAnchor: rowDensity == .table,
+                    drawsDivider: index != sessions.index(before: sessions.endIndex),
                     // 滚动冻结期间已结束的会话仍留在“进行中”原位，必须显式展示最新终态。
                     showsNeutralHistoryStatus: isActiveSection && !session.isRunning
                 )
@@ -872,11 +880,6 @@ struct SessionListView: View {
             .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
             .sessionRowSwipeActions(session)
-            .modifier(
-                SessionSectionRowContainer(
-                    position: position
-                )
-            )
             .listRowInsets(
                 .init(
                     top: 0,
@@ -886,15 +889,7 @@ struct SessionListView: View {
                 )
             )
             .listRowSeparator(.hidden)
-            .listRowBackground(
-                SessionSectionListRowBackground(
-                    position: position,
-                    density: rowDensity,
-                    tokens: tokens,
-                    isSelected: session.id == highlightedSessionID,
-                    usesIncreasedContrast: colorSchemeContrast == .increased
-                )
-            )
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -1059,130 +1054,6 @@ struct SessionListView: View {
     }
 }
 
-private struct SessionSectionRowPosition {
-    let isFirst: Bool
-    let isLast: Bool
-}
-
-/// 系统行背景覆盖 List 分配给可滑动行的完整区域，避免内容背景之间露出页面底色。
-private struct SessionSectionListRowBackground: View {
-    let position: SessionSectionRowPosition
-    let density: SessionIndexRowDensity
-    let tokens: ThemeTokens
-    let isSelected: Bool
-    let usesIncreasedContrast: Bool
-
-    var body: some View {
-        ZStack {
-            SessionSectionRowShape(position: position, cornerRadius: 12)
-                .fill(tokens.contentPanelBackground)
-            if isSelected {
-                SessionSectionRowShape(position: position, cornerRadius: 12)
-                    .fill(tokens.selectionFill)
-            }
-            SessionSectionBoundaryShape(position: position, cornerRadius: 12)
-                .stroke(
-                    tokens.border.opacity(usesIncreasedContrast ? 1 : 0.68),
-                    lineWidth: usesIncreasedContrast ? 1 : 0.5
-                )
-        }
-        .overlay(alignment: .bottom) {
-            if !position.isLast {
-                Rectangle()
-                    .fill(tokens.border.opacity(usesIncreasedContrast ? 0.82 : 0.45))
-                    .frame(height: 0.5)
-                    .padding(.leading, density.horizontalPadding)
-            }
-        }
-        .padding(.horizontal, 20)
-    }
-}
-
-/// 日期分区的填充由列表层统一绘制；行组件自身不再拥有卡片背景或描边。
-private struct SessionSectionRowShape: Shape {
-    let position: SessionSectionRowPosition
-    let cornerRadius: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        let topRadius = position.isFirst ? min(cornerRadius, rect.height / 2) : 0
-        let bottomRadius = position.isLast ? min(cornerRadius, rect.height / 2) : 0
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY + topRadius))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX + topRadius, y: rect.minY),
-            control: CGPoint(x: rect.minX, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX - topRadius, y: rect.minY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX, y: rect.minY + topRadius),
-            control: CGPoint(x: rect.maxX, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRadius))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX - bottomRadius, y: rect.maxY),
-            control: CGPoint(x: rect.maxX, y: rect.maxY)
-        )
-        path.addLine(to: CGPoint(x: rect.minX + bottomRadius, y: rect.maxY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX, y: rect.maxY - bottomRadius),
-            control: CGPoint(x: rect.minX, y: rect.maxY)
-        )
-        path.closeSubpath()
-        return path
-    }
-}
-
-/// 只画分区的外轮廓，不在相邻行之间重复制造一条满宽边界。
-private struct SessionSectionBoundaryShape: Shape {
-    let position: SessionSectionRowPosition
-    let cornerRadius: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        let topRadius = position.isFirst ? min(cornerRadius, rect.height / 2) : 0
-        let bottomRadius = position.isLast ? min(cornerRadius, rect.height / 2) : 0
-        var path = Path()
-
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY + topRadius))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - bottomRadius))
-        if position.isLast {
-            path.addQuadCurve(
-                to: CGPoint(x: rect.minX + bottomRadius, y: rect.maxY),
-                control: CGPoint(x: rect.minX, y: rect.maxY)
-            )
-            path.addLine(to: CGPoint(x: rect.maxX - bottomRadius, y: rect.maxY))
-            path.addQuadCurve(
-                to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRadius),
-                control: CGPoint(x: rect.maxX, y: rect.maxY)
-            )
-        }
-
-        path.move(to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRadius))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + topRadius))
-        if position.isFirst {
-            path.addQuadCurve(
-                to: CGPoint(x: rect.maxX - topRadius, y: rect.minY),
-                control: CGPoint(x: rect.maxX, y: rect.minY)
-            )
-            path.addLine(to: CGPoint(x: rect.minX + topRadius, y: rect.minY))
-            path.addQuadCurve(
-                to: CGPoint(x: rect.minX, y: rect.minY + topRadius),
-                control: CGPoint(x: rect.minX, y: rect.minY)
-            )
-        }
-        return path
-    }
-}
-
-private struct SessionSectionRowContainer: ViewModifier {
-    let position: SessionSectionRowPosition
-
-    func body(content: Content) -> some View {
-        content
-            // ButtonStyle 的 touch-down 填充也必须服从分区外轮廓，首末行不会溢出圆角。
-            .clipShape(SessionSectionRowShape(position: position, cornerRadius: 12))
-    }
-}
-
 private struct SessionIndexRowButtonStyle: ButtonStyle {
     let pressedFill: Color
 
@@ -1209,6 +1080,9 @@ struct SessionIndexRow: View {
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
+    var projectAnchorEmoji: String? = nil
+    var reservesProjectAnchor = false
+    var drawsDivider = false
     var drawsSelectionBackground = true
     var showsNeutralHistoryStatus = false
 
@@ -1248,8 +1122,15 @@ struct SessionIndexRow: View {
                     .padding(.leading, 2)
             }
         }
-        // 视觉密度可以低于 44pt，但按钮的实际命中区始终满足触控与全键盘访问。
-        .frame(minHeight: 44)
+        .overlay(alignment: .bottom) {
+            if drawsDivider {
+                Rectangle()
+                    .fill(tokens.border.opacity(0.46))
+                    .frame(height: 0.5)
+                    .padding(.leading, dividerLeadingInset)
+            }
+        }
+        .frame(minHeight: density == .rail ? 34 : 44)
     }
 
     private func compactContent(tokens: ThemeTokens) -> some View {
@@ -1278,24 +1159,69 @@ struct SessionIndexRow: View {
     }
 
     private func tableContent(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 7) {
-                titleContent(tokens: tokens, compactPinnedBadge: true)
-                stableStateIcons(tokens: tokens)
+        HStack(spacing: 10) {
+            if reservesProjectAnchor {
+                projectAnchor(tokens: tokens)
+                    .frame(width: 30, height: 30)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            runtimeIcon
-                .frame(width: 20, alignment: .center)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    titleContent(tokens: tokens, compactPinnedBadge: true)
 
-            directoryText(tokens: tokens)
-                .frame(width: 180, alignment: .leading)
+                    let preview = SessionListPresentation.previewDisplayText(for: session)
+                    if !preview.isEmpty {
+                        Text(preview)
+                            .font(themeStore.uiFont(size: 13, weight: .regular))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            animatedStatusLabel(tokens: tokens)
-                .frame(width: 72, alignment: .trailing)
+                HStack(spacing: 10) {
+                    runtimeIcon
+                    Text(session.project)
+                        .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    stableStateIcons(tokens: tokens)
+                    Spacer(minLength: 8)
+                    animatedStatusLabel(tokens: tokens)
+                    timestamp(tokens: tokens)
+                }
+            }
+        }
+    }
 
-            timestamp(tokens: tokens)
-                .frame(width: 56, alignment: .trailing)
+    @ViewBuilder
+    private func projectAnchor(tokens: ThemeTokens) -> some View {
+        if let projectAnchorEmoji {
+            let palette: [Color] = [
+                Color(red: 0.91, green: 0.63, blue: 0.48),
+                Color(red: 0.47, green: 0.67, blue: 0.78),
+                Color(red: 0.76, green: 0.64, blue: 0.42),
+                Color(red: 0.88, green: 0.72, blue: 0.34),
+                Color(red: 0.64, green: 0.70, blue: 0.48),
+                Color(red: 0.72, green: 0.53, blue: 0.72),
+            ]
+            let tint = palette[
+                WorkspaceAppearanceStore.tintIndex(for: projectAnchorEmoji, count: palette.count)
+            ]
+
+            Text(projectAnchorEmoji)
+                .font(.system(size: 17))
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(colorScheme == .dark ? 0.30 : 0.18), in: WorkspaceIconMeeGoShape())
+                .overlay {
+                    WorkspaceIconMeeGoShape()
+                        .stroke(tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42), lineWidth: 0.75)
+                }
+                .accessibilityHidden(true)
+        } else {
+            Color.clear
         }
     }
 
@@ -1420,6 +1346,10 @@ struct SessionIndexRow: View {
 
     private var visibleTitle: String {
         SessionListPresentation.titleDisplayText(for: session)
+    }
+
+    private var dividerLeadingInset: CGFloat {
+        density.horizontalPadding + (density == .table && reservesProjectAnchor ? 40 : 0)
     }
 
     private var status: AgentSessionDisplayStatus {

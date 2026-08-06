@@ -13638,6 +13638,60 @@
         }
       }
     },
+    "ui.just_completed" : {
+      "comment" : "Sidebar section for unread sessions that have just reached a terminal state.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Just completed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刚完成"
+          }
+        }
+      }
+    },
+    "ui.needs_you" : {
+      "comment" : "Sidebar section for sessions waiting for the user's approval or input.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Needs you"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要你"
+          }
+        }
+      }
+    },
+    "ui.more_sessions_count" : {
+      "comment" : "Sidebar overflow row. The placeholder is the number of additional sessions.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld more"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还有 %lld 条"
+          }
+        }
+      }
+    },
     "ui.labeled_value" : {
       "comment" : "Short label/value pair. %@ are the label and value.",
       "localizations" : {
