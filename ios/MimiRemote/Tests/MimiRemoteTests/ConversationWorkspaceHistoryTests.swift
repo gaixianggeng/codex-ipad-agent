@@ -1961,7 +1961,7 @@ extension ConversationDataFlowTests {
             [.codex, .claude],
             "Claude 通道可用时，工作区入口必须显式暴露 Claude 会话动作"
         )
-        XCTAssertNil(WorkspaceSessionRuntimeChoice.codex.runtimeProvider)
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.runtimeProvider, "codex")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandAssetName, "ChatGPT")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandAssetName, "Claude")

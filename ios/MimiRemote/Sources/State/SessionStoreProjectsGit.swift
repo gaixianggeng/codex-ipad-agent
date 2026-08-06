@@ -1523,6 +1523,7 @@ extension SessionStore {
             let page = try await sessionListPageFillingPresentationWindow(
                 client: lease.client,
                 workspace: workspace,
+                runtimeProvider: "codex",
                 cursor: cursor,
                 limit: Self.expandedSessionPageLimit,
                 consistency: .fastIndexed,
@@ -1561,6 +1562,49 @@ extension SessionStore {
             }
             setErrorMessage(error.localizedDescription)
         }
+    }
+
+    /// 工作区详情按 Runtime 独立分页。opaque cursor 原样归属于当前 Runtime，View 只缓存展示窗口；
+    /// canonical Store 仍吸收 raw rows，保证打开会话时已有正确的路由和上下文。
+    func workspaceRuntimeSessionsPage(
+        projectID: String,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int,
+        excludingListableSessionIDs: Set<SessionID> = []
+    ) async throws -> SessionsPage {
+        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+            throw CancellationError()
+        }
+        let lease = try captureProjectsGitHostLease()
+        let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
+        let page = try await sessionListPageFillingPresentationWindow(
+            client: lease.client,
+            workspace: workspace,
+            runtimeProvider: normalizedRuntime,
+            cursor: cursor,
+            limit: max(1, limit),
+            consistency: .authoritative,
+            source: cursor == nil ? .workspaceForeground : .workspaceLoadMore,
+            expectedHostScope: lease.scope,
+            excludingListableSessionIDs: excludingListableSessionIDs
+        )
+        try requireCurrentProjectsGitHost(lease)
+
+        let prepared = sessions(page.sessions, in: workspace).map(sessionPreparedForStorage)
+        mergeSessionPage(prepared)
+        clearWorkspaceUnavailable(workspace.id)
+
+        let listable = prepared.filter { session in
+            isListableSession(session)
+                && !excludingListableSessionIDs.contains(session.id)
+                && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == normalizedRuntime
+        }
+        return SessionsPage(
+            sessions: SessionIndexStore.sortedSessions(listable),
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore
+        )
     }
 
     func refreshSelectedProjectSessions(showLoading: Bool = true) async {

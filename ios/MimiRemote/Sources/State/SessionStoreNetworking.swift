@@ -136,6 +136,8 @@ protocol SessionStoreAPIClient {
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
+    func sessionsPage(projectID: String?, runtimeProvider: String, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
+    func sessionsPage(workspace: AgentWorkspace, runtimeProvider: String, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
@@ -168,6 +170,36 @@ protocol SessionStoreAPIClient {
 }
 
 extension SessionStoreAPIClient {
+    func sessionsPage(
+        projectID: String?,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        try await sessionsPage(
+            projectID: projectID,
+            cursor: cursor,
+            limit: limit,
+            consistency: consistency
+        )
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        try await sessionsPage(
+            workspace: workspace,
+            cursor: cursor,
+            limit: limit,
+            consistency: consistency
+        )
+    }
+
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
         SessionsPage(sessions: [])
     }

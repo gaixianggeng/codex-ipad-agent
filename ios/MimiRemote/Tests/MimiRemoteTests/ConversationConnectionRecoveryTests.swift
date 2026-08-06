@@ -1486,7 +1486,7 @@ extension ConversationDataFlowTests {
         )
         let codexTransport = FakeCodexAppServerTransport()
         let claudeTransport = FakeCodexAppServerTransport()
-        let client = MultiRuntimeSessionAPIClient(
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(
             codexRuntime: CodexAppServerSessionRuntime(
                 endpoint: "http://127.0.0.1:8787",
                 token: "outer-token",
