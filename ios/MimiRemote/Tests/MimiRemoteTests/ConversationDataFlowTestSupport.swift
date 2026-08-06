@@ -464,6 +464,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
     let accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)?
+    /// 需要区分 unsupported / failed 时用这个；它优先于 snapshot 便捷 handler。
+    let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let externalActivityResponses: [ExternalActivityResponse?]
     var requestedProjectIDs: [String?] {
@@ -577,6 +579,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)? = nil,
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
+        accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
         externalActivityResponses: [ExternalActivityResponse?] = []
     ) {
@@ -634,6 +637,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitHandler = rateLimitHandler
         self.controlledGlobalSessionsHandler = controlledGlobalSessionsHandler
         self.accountTokenUsageHandler = accountTokenUsageHandler
+        self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
         self.externalActivityResponses = externalActivityResponses
     }
@@ -674,8 +678,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         return rateLimitsByRuntime[runtimeProvider]
     }
 
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
-        try await accountTokenUsageHandler?()
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
+        if let accountTokenUsageFetchHandler {
+            return try await accountTokenUsageFetchHandler()
+        }
+        guard let accountTokenUsageHandler else { return .unsupported }
+        guard let snapshot = try await accountTokenUsageHandler() else { return .unsupported }
+        return .snapshot(snapshot)
     }
 
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {

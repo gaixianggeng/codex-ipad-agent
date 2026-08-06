@@ -13675,13 +13675,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Auto-approve low-risk actions. You will still be asked about higher-risk actions."
+            "value" : "You will still be asked about higher-risk actions."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动批准低风险操作；高风险操作仍会请求你的确认。"
+            "value" : "高风险操作仍会请求你的确认"
           }
         }
       }
@@ -34940,19 +34940,73 @@
       }
     },
     "ui.token_activity_unavailable" : {
-      "comment" : "Shown when the current host or account cannot return account Token activity.",
+      "comment" : "Shown when the connected Mac or account does not provide daily Token activity history at all.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Token activity is temporarily unavailable"
+            "value" : "This Mac does not provide Token activity history"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Token 活动暂时不可用"
+            "value" : "当前 Mac 不提供 Token 活动历史"
+          }
+        }
+      }
+    },
+    "ui.token_activity_empty" : {
+      "comment" : "Shown when Token activity history is available but the account has no recorded activity yet.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Token activity yet"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有 Token 活动记录"
+          }
+        }
+      }
+    },
+    "ui.token_activity_failed" : {
+      "comment" : "Shown when the Token activity request failed and no earlier result is available.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't load Token activity. Refresh to retry"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token 活动加载失败，刷新可重试"
+          }
+        }
+      }
+    },
+    "ui.token_activity_stale" : {
+      "comment" : "Caption under the Token activity grid when the latest refresh failed and the grid still shows the previous result.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refresh failed. Showing the last loaded result"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新失败，显示的是上次加载的结果"
           }
         }
       }

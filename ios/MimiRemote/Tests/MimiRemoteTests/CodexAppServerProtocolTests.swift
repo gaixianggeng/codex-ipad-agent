@@ -515,6 +515,29 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(emptyBuckets.dailyUsageBuckets, [])
     }
 
+    func testAccountTokenUsageRefreshDistinguishesConfigFailureFromUnsupported() async {
+        let configFailureRuntime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test",
+            configProvider: { throw MockError.unimplemented }
+        )
+        let configFailure = await configFailureRuntime.performAccountTokenUsageRefresh()
+        XCTAssertEqual(configFailure, .failed)
+
+        let unsupportedRuntime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test",
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: AgentProject(id: "usage", name: "Usage", path: "/tmp/usage"),
+                    allowedMethods: ["thread/list"]
+                )
+            }
+        )
+        let unsupported = await unsupportedRuntime.performAccountTokenUsageRefresh()
+        XCTAssertEqual(unsupported, .unsupported)
+    }
+
     func testDeterministicGatewayPolicyFailureStopsReconnectOnlyForHardPolicyErrors() {
         // 硬策略拒绝：重连必然复现，应停止自动重连。
         XCTAssertTrue(SessionStore.isDeterministicGatewayPolicyFailure(

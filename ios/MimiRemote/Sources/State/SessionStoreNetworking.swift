@@ -166,7 +166,7 @@ protocol SessionStoreAPIClient {
     ) async throws -> HistoryMessagesPage
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot?
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
 }
 
 extension SessionStoreAPIClient {
@@ -221,8 +221,9 @@ extension SessionStoreAPIClient {
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         try await refreshRateLimit(sessionID: nil)
     }
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
-        nil
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
+        // 没有实现该能力的客户端是“不提供”，不是“请求失败”。
+        .unsupported
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []

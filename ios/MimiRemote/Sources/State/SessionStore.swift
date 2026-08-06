@@ -111,9 +111,12 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
+    /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?
-    @Published var isRefreshingAccountTokenUsage = false
-    @Published var isAccountTokenUsageUnavailable = false
+    @Published var accountTokenActivity: AccountTokenActivityState = .idle
+    /// 只表示活动请求本身在飞。不能把配额刷新并进来，否则配额一刷新就会把
+    /// 活动的失败态和空态一起伪装成“正在加载”。
+    @Published var isRefreshingAccountTokenActivity = false
     // 使用量刷新跨设置页、个人页和侧栏共享，由 Store 按 runtime 去重。
     // 视图只观察自己的 provider，避免 Claude loading 禁用其他按钮，也避免
     // 页面关闭后由未结构化 Task 回写已销毁的局部 @State。

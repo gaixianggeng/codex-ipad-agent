@@ -10,41 +10,46 @@ extension SessionStore {
         }
 
         accountTokenUsageRefreshHostScope = hostScope
-        isRefreshingAccountTokenUsage = true
+        isRefreshingAccountTokenActivity = true
+        // 只有手上没有可显示的历史时才进首屏加载态；已经有网格就保持原样、只让刷新按钮转，
+        // 避免每次刷新都把网格闪成骨架。
+        if accountTokenActivity.displayBuckets == nil {
+            accountTokenActivity = .loading
+        }
         defer {
             if accountTokenUsageRefreshHostScope == hostScope {
                 accountTokenUsageRefreshHostScope = nil
-                isRefreshingAccountTokenUsage = false
+                isRefreshingAccountTokenActivity = false
             }
         }
 
         guard !Task.isCancelled else { return }
+        let fetch: AccountTokenUsageFetch
         do {
-            let snapshot = try await clientFactory().refreshAccountTokenUsage()
-            guard !Task.isCancelled,
-                  appStore.activeHostScope == hostScope,
-                  accountTokenUsageRefreshHostScope == hostScope
-            else {
-                return
-            }
-            if let snapshot {
-                accountTokenUsage = snapshot
-                // summary 可用不代表日粒度历史可用；nil bucket 必须诚实显示“暂不可用”，
-                // 同时仍保留 lifetimeTokens 供卡片标题展示。
-                isAccountTokenUsageUnavailable = snapshot.dailyUsageBuckets == nil
-            } else if accountTokenUsage == nil {
-                isAccountTokenUsageUnavailable = true
-            }
+            fetch = try await clientFactory().refreshAccountTokenUsage()
         } catch is CancellationError {
             return
         } catch {
-            guard appStore.activeHostScope == hostScope,
-                  accountTokenUsageRefreshHostScope == hostScope,
-                  accountTokenUsage == nil
-            else {
-                return
-            }
-            isAccountTokenUsageUnavailable = true
+            fetch = .failed
+        }
+        guard !Task.isCancelled,
+              appStore.activeHostScope == hostScope,
+              accountTokenUsageRefreshHostScope == hostScope
+        else {
+            return
+        }
+
+        switch fetch {
+        case .snapshot(let snapshot):
+            accountTokenUsage = snapshot
+            // summary 可用不代表日粒度历史可用；nil bucket 归一成 unsupported，
+            // 同时仍保留 lifetimeTokens 供卡片展示。
+            accountTokenActivity = .resolved(buckets: snapshot.dailyUsageBuckets, asOf: Date())
+        case .unsupported:
+            accountTokenActivity = .unsupported
+        case .failed:
+            // 保留上一次成功的结果，让展示层能画出旧网格并标注它是旧的。
+            accountTokenActivity = .failed(previous: accountTokenActivity.lastSuccessful)
         }
     }
 }

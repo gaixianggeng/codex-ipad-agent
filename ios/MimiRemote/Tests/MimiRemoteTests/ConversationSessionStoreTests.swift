@@ -2463,10 +2463,106 @@ extension ConversationDataFlowTests {
         await store.refreshAccountTokenUsage()
 
         XCTAssertEqual(store.accountTokenUsage, snapshot)
-        XCTAssertTrue(
-            store.isAccountTokenUsageUnavailable,
-            "summary 可用但日历史为 nil 时，点格图必须诚实显示暂不可用"
+        XCTAssertEqual(
+            store.accountTokenActivity,
+            .unsupported,
+            "summary 可用但日历史为 nil 时，点格图必须诚实显示不提供历史"
         )
+        XCTAssertNil(
+            store.accountTokenActivity.displayBuckets,
+            "不提供历史时不能给出可画的空数据"
+        )
+    }
+
+    func testAccountTokenUsageDistinguishesEmptyHistoryFromUnsupported() async {
+        let snapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 12),
+            dailyUsageBuckets: []
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageHandler: { snapshot }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAccountTokenUsage()
+
+        guard case .empty = store.accountTokenActivity else {
+            return XCTFail("空数组代表接口可用但没有活动，不能与 unsupported 混为一谈")
+        }
+        XCTAssertEqual(store.accountTokenActivity.displayBuckets, [])
+    }
+
+    func testAccountTokenUsageFailureKeepsPreviousBucketsAndMarksThemStale() async {
+        let buckets = [AccountTokenUsageDailyBucket(startDate: "2026-08-01", tokens: 42)]
+        let outcomes: [AccountTokenUsageFetch] = [
+            .snapshot(
+                AccountTokenUsageSnapshot(
+                    summary: AccountTokenUsageSummary(lifetimeTokens: 42),
+                    dailyUsageBuckets: buckets
+                )
+            ),
+            .failed
+        ]
+        let cursor = FetchOutcomeCursor(outcomes)
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageFetchHandler: { await cursor.next() }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAccountTokenUsage()
+        XCTAssertEqual(store.accountTokenActivity.displayBuckets, buckets)
+        XCTAssertFalse(store.accountTokenActivity.isShowingStaleData)
+
+        await store.refreshAccountTokenUsage()
+
+        XCTAssertEqual(
+            store.accountTokenActivity.displayBuckets,
+            buckets,
+            "刷新失败不该丢掉已经拿到的历史"
+        )
+        XCTAssertTrue(
+            store.accountTokenActivity.isShowingStaleData,
+            "失败后仍在画旧网格时必须标记为过期，否则等于把旧数据当成当前值"
+        )
+    }
+
+    func testAccountTokenActivityEntersLoadingOnlyWithoutDisplayableData() async {
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageFetchHandler: { .failed }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        XCTAssertEqual(store.accountTokenActivity, .idle)
+
+        await store.refreshAccountTokenUsage()
+
+        XCTAssertEqual(
+            store.accountTokenActivity,
+            .failed(previous: nil),
+            "没有任何历史时失败必须是纯失败态，不能停留在加载中"
+        )
+        XCTAssertFalse(store.isRefreshingAccountTokenActivity)
     }
 
     func testAccountTokenUsageDropsLateResponseAfterHostSwitch() async throws {
@@ -2516,7 +2612,7 @@ extension ConversationDataFlowTests {
         let newScope = appStore.activeHostScope
         store.accountTokenUsage = currentSnapshot
         store.accountTokenUsageRefreshHostScope = newScope
-        store.isRefreshingAccountTokenUsage = true
+        store.isRefreshingAccountTokenActivity = true
 
         await gate.resolve(oldSnapshot)
         await refreshTask.value
@@ -2524,7 +2620,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.accountTokenUsage, currentSnapshot)
         XCTAssertEqual(store.accountTokenUsageRefreshHostScope, newScope)
         XCTAssertTrue(
-            store.isRefreshingAccountTokenUsage,
+            store.isRefreshingAccountTokenActivity,
             "旧主机请求的 defer 不能清掉新主机正在进行的刷新"
         )
     }
@@ -5214,6 +5310,19 @@ private actor SessionArchiveResponseGate {
             continuations[request] = pending
         }
         return continuation
+    }
+}
+
+/// 按顺序吐出预设的账号用量结果，用来构造“先成功、后失败”的刷新序列。
+private actor FetchOutcomeCursor {
+    private var outcomes: [AccountTokenUsageFetch]
+
+    init(_ outcomes: [AccountTokenUsageFetch]) {
+        self.outcomes = outcomes
+    }
+
+    func next() -> AccountTokenUsageFetch {
+        outcomes.isEmpty ? .failed : outcomes.removeFirst()
     }
 }
 
