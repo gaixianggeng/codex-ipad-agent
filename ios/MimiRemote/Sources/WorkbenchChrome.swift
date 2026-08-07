@@ -9,7 +9,8 @@ enum AppDestination: Hashable {
 }
 
 /// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
-/// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
+/// 紧凑导航先同步提交控件直接绑定的视觉状态，再按控件合并外部副作用；这样既不让
+/// Tab/返回手势落后一帧，也能继续丢弃恢复、网络选择等已经过期的写入。
 @MainActor
 final class WorkbenchNavigationBindingScheduler {
     enum Lane: Hashable {
@@ -34,6 +35,21 @@ final class WorkbenchNavigationBindingScheduler {
             self.revisions[lane] = nil
             action()
         }
+    }
+
+    /// Binding setter 里的视觉状态属于系统当前交互事务，必须立即提交；只有可能发布到
+    /// 其他 Store/Binding 的副作用才延后。返回值把本次视觉快照带到延后阶段做过期检查。
+    @discardableResult
+    func commit<Value>(
+        on lane: Lane,
+        visualUpdate: () -> Value,
+        deferredSideEffect: @escaping @MainActor (Value) -> Void
+    ) -> Value {
+        let value = visualUpdate()
+        schedule(on: lane) {
+            deferredSideEffect(value)
+        }
+        return value
     }
 }
 
