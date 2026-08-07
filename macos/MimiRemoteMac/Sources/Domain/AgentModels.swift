@@ -91,6 +91,36 @@ struct NetworkConfigurationResult: Codable, Equatable, Sendable {
     }
 }
 
+enum ClaudeActivationPreference: String, Codable, Equatable, Sendable {
+    case automatic = "auto"
+    case enabled
+    case disabled
+}
+
+struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let available: Bool
+    let preference: ClaudeActivationPreference
+    let previousEnabled: Bool
+    let previousPreference: ClaudeActivationPreference
+    let changed: Bool
+    let restartRequired: Bool
+    let reason: String
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case enabled = "claude_enabled"
+        case available
+        case preference
+        case previousEnabled = "previous_enabled"
+        case previousPreference = "previous_preference"
+        case changed
+        case restartRequired = "restart_required"
+        case reason
+        case message
+    }
+}
+
 struct AgentCheck: Codable, Equatable, Identifiable, Sendable {
     let name: String
     let ok: Bool

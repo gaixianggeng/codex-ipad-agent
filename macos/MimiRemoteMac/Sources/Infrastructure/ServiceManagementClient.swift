@@ -1,4 +1,11 @@
+import Foundation
+import Security
 import ServiceManagement
+
+struct CodeSigningIdentity: Equatable, Sendable {
+    let identifier: String?
+    let teamIdentifier: String?
+}
 
 struct ServiceManagementClient {
     var agentStatus: @MainActor () -> ServiceRegistrationState
@@ -83,7 +90,8 @@ extension ServiceManagementClient {
     /// 这里直接核对包内 plist 与 BundleProgram，只有资源真的损坏时才要求重新安装。
     static func validateAgentConfiguration(
         bundleURL: URL = Bundle.main.bundleURL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        signingIdentityProvider: ((URL) -> CodeSigningIdentity?)? = nil
     ) -> String? {
         let plistURL = bundleURL
             .appending(path: "Contents/Library/LaunchAgents", directoryHint: .isDirectory)
@@ -108,7 +116,66 @@ extension ServiceManagementClient {
         guard fileManager.isExecutableFile(atPath: executableURL.path) else {
             return "App 包内缺少可执行的 agentd，请重新安装正式版本。"
         }
+
+        let identityProvider = signingIdentityProvider ?? codeSigningIdentity(at:)
+        guard let appIdentity = identityProvider(bundleURL) else {
+            return "无法读取 App 代码签名，不能注册 macOS 后台服务。请重新安装正式版本。"
+        }
+        guard let appTeam = appIdentity.teamIdentifier, !appTeam.isEmpty else {
+            // ad-hoc 快照只验证包结构，没有 Team ID，无法安全接管已有的
+            // ServiceManagement / BTM 记录；必须在任何注册或注销前明确阻止。
+            return "当前 App 是未签名或 ad-hoc 结构快照，不能启动 macOS 后台服务。请安装正式包或同团队签名的开发验收包。"
+        }
+        guard appIdentity.identifier == "com.gaixianggeng.mimi.mac" else {
+            return "App 代码签名标识不正确，不能注册 macOS 后台服务。请重新安装正式版本。"
+        }
+        guard let agentIdentity = identityProvider(executableURL),
+              agentIdentity.identifier == "com.gaixianggeng.mimi.mac.agentd",
+              let agentTeam = agentIdentity.teamIdentifier,
+              !agentTeam.isEmpty
+        else {
+            return "agentd 代码签名无效，不能注册 macOS 后台服务。请重新安装正式版本。"
+        }
+        guard agentTeam == appTeam else {
+            return "App 与 agentd 的签名团队不一致，不能注册 macOS 后台服务。请重新安装正式版本。"
+        }
         return nil
+    }
+
+    /// 直接通过 Security.framework 读取签名身份，不启动 shell，也不依赖用户 PATH。
+    private static func codeSigningIdentity(at url: URL) -> CodeSigningIdentity? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(
+            url as CFURL,
+            SecCSFlags(rawValue: 0),
+            &staticCode
+        ) == errSecSuccess,
+              let staticCode
+        else {
+            return nil
+        }
+        guard SecStaticCodeCheckValidity(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSStrictValidate),
+            nil
+        ) == errSecSuccess else {
+            return nil
+        }
+
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        ) == errSecSuccess,
+              let dictionary = signingInformation as? [String: Any]
+        else {
+            return nil
+        }
+        return CodeSigningIdentity(
+            identifier: dictionary[kSecCodeInfoIdentifier as String] as? String,
+            teamIdentifier: dictionary[kSecCodeInfoTeamIdentifier as String] as? String
+        )
     }
 
     /// SMAppService 不会自动刷新已登记的 LaunchAgent 可执行文件。正式发布的

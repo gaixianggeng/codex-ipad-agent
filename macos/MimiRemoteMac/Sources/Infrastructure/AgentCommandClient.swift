@@ -6,6 +6,10 @@ struct AgentCommandClient: Sendable {
     var status: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
+    var configureClaude: @Sendable (
+        _ preference: ClaudeActivationPreference,
+        _ restoreEnabled: Bool?
+    ) async throws -> ClaudeConfigurationResult
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var version: @Sendable () async throws -> String
@@ -103,6 +107,17 @@ extension AgentCommandClient {
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
             },
+            configureClaude: { preference, restoreEnabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(ClaudeConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: claudeConfigurationArguments(
+                        preference: preference,
+                        restoreEnabled: restoreEnabled
+                    ),
+                    timeout: .seconds(10)
+                ))
+            },
             setLANAccess: { enabled in
                 let binary = try requireEmbeddedBinary()
                 return try decode(NetworkConfigurationResult.self, from: try await execute(
@@ -148,6 +163,21 @@ extension AgentCommandClient {
         var arguments = ["status", "--json"]
         if includeRuntime {
             arguments.append("--runtime")
+        }
+        return arguments
+    }
+
+    static func claudeConfigurationArguments(
+        preference: ClaudeActivationPreference,
+        restoreEnabled: Bool? = nil
+    ) -> [String] {
+        var arguments = [
+            "runtime",
+            "--claude=\(preference.rawValue)",
+            "--json",
+        ]
+        if let restoreEnabled {
+            arguments.append("--restore-enabled=\(restoreEnabled)")
         }
         return arguments
     }
