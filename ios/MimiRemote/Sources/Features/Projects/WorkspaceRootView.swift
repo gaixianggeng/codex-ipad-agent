@@ -486,15 +486,32 @@ struct WorkspaceRootView: View {
         )
     }
 
+    @ViewBuilder
     private func navigationContent(tokens: ThemeTokens) -> some View {
-        workspaceBrowser(tokens: tokens)
-            .accessibilityIdentifier("workspace.browser")
-            // 标题与底部 Tab 的“工作区”标签完全重复，白占一条 44pt 横带；
-            // 当前工作区的身份改由下方胶囊行表达。
-            // “打开目录”也从导航栏移到胶囊行末端——它和切换工作区是同一类操作，
-            // 分成上下两行只会在顶部留出一整条空白。
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar(.hidden, for: .navigationBar)
+        if let manageConnections {
+            // 会话页把设备切换器放在顶栏左侧；工作区也复用同一位置，避免切换 Tab 时垂直跳动。
+            workspaceBrowser(tokens: tokens)
+                .accessibilityIdentifier("workspace.browser")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        HostSwitcherMenu(
+                            presentation: .toolbar,
+                            manageConnections: manageConnections
+                        )
+                    }
+                    // 与会话页保持相同的顶栏分组间距，避免设备入口和其他 leading 控件粘连。
+                    if #available(iOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .topBarLeading)
+                    }
+                }
+        } else {
+            // 宽屏由侧栏承载设备入口，工作区内容列继续隐藏空导航栏，避免多出一条空白顶栏。
+            workspaceBrowser(tokens: tokens)
+                .accessibilityIdentifier("workspace.browser")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar(.hidden, for: .navigationBar)
+        }
     }
 
     private func openDirectoryButton(tokens: ThemeTokens) -> some View {
@@ -648,16 +665,6 @@ struct WorkspaceRootView: View {
 
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
-            if let manageConnections {
-                // 紧凑布局不能把 Host 切换器留在随后会被隐藏的系统导航栏里；
-                // 固定在自绘控件带首端，既保留连接管理入口，也不重新占用一整条顶栏。
-                HostSwitcherMenu(
-                    presentation: .toolbar,
-                    manageConnections: manageConnections
-                )
-                .workbenchChromeCircle(tokens: tokens)
-            }
-
             ScrollViewReader { proxy in
                 // 收缩成头像是一种压缩手法：只有横向真的放不下时才该发生，
                 // 而且必须渐进——只有“全展开”和“只展开选中项”两档时，
