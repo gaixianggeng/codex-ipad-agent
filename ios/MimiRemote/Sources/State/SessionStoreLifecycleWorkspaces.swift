@@ -369,15 +369,15 @@ extension SessionStore {
     /// 标题长度、分支长度和状态分布刻意贴近真机首屏，否则密度和截断问题看不出来。
     func debugDenseWorkspaceSessions(workspace: AgentWorkspace, now: Date) -> [AgentSession] {
         let fixtures: [(String, String, String, Int, String)] = [
-            ("等待确认部署权限", "main", SessionStatus.waitingForApproval.rawValue, 2, "Agent 正在等待你批准写入 launchd 配置。"),
-            ("这两个应该是一回事，确认下是不是同一个根因", "main", SessionStatus.completed.rawValue, 46, "两处都落在 relay 重连的同一段止损逻辑里。"),
-            ("排查 MIM82 Claude 未响应", "codex/mim-81-mim-82-main-integration", SessionStatus.failed.rawValue, 47, "bridge 起来了但没握手，日志停在 handshake 之前。"),
-            ("查看待办 Issue 状态", "codex/mim-109-performance-optimization", SessionStatus.completed.rawValue, 74, "还有 6 条在 In Progress，2 条等验收。"),
-            ("参考 Seedex 网站设计", "main", SessionStatus.completed.rawValue, 79, "首屏留白和字重层级值得抄，配色不合适。"),
-            ("确认 MIM-99 是否已合并", "main", SessionStatus.completed.rawValue, 283, "已经合进 main，标签也打了。"),
-            ("Luna 多轮验收与全项目回归", "codex/mim-99-center-token-usage-card", SessionStatus.running.rawValue, 284, "正在跑第三轮，前两轮都过了。"),
-            ("为设置页 Token 加载增加骨架屏", "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 295, "首屏空窗从 800ms 缩到看不见。"),
-            ("查看 MIM-104 会话页改版进度", "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 335, "发丝线和日期分桶已经上了。")
+            (L10n.text("ui.waiting_to_confirm_deployment_permission"), "main", SessionStatus.waitingForApproval.rawValue, 2, L10n.text("ui.agent_is_waiting_for_you_to_approve_writing_launchd_configuration")),
+            (L10n.text("ui.these_two_should_be_the_same_issue_confirm_whether_they_share_the_same_root_cause"), "main", SessionStatus.completed.rawValue, 46, L10n.text("ui.both_paths_reach_the_same_relay_reconnection_damage_control_logic")),
+            (L10n.text("ui.investigate_mim82_claude_not_responding"), "codex/mim-81-mim-82-main-integration", SessionStatus.failed.rawValue, 47, L10n.text("ui.bridge_started_but_did_not_complete_the_handshake")),
+            (L10n.text("ui.review_pending_issue_status"), "codex/mim-109-performance-optimization", SessionStatus.completed.rawValue, 74, L10n.text("ui.six_items_are_in_progress_and_two_are_awaiting_verification")),
+            (L10n.text("ui.review_seedex_website_design"), "main", SessionStatus.completed.rawValue, 79, L10n.text("ui.the_first_screen_spacing_and_type_hierarchy_are_worth_borrowing_but_not_the_colors")),
+            (L10n.text("ui.confirm_whether_mim_99_has_been_merged"), "main", SessionStatus.completed.rawValue, 283, L10n.text("ui.it_has_been_merged_into_main_and_tagged")),
+            (L10n.text("ui.luna_multi_round_verification_and_full_project_regression"), "codex/mim-99-center-token-usage-card", SessionStatus.running.rawValue, 284, L10n.text("ui.running_the_third_round_after_the_first_two_passed")),
+            (L10n.text("ui.add_a_skeleton_screen_to_settings_token_loading"), "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 295, L10n.text("ui.the_initial_800ms_blank_period_is_no_longer_visible")),
+            (L10n.text("ui.review_mim_104_session_page_redesign_progress"), "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 335, L10n.text("ui.hairline_dividers_and_date_buckets_are_in_place"))
         ]
 
         return fixtures.enumerated().map { index, fixture in
