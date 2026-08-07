@@ -456,6 +456,11 @@ final class AppStore: ObservableObject {
     var shouldSeedDebugHistoryUnreadUI: Bool {
         debugLaunchConfiguration.seedsHistoryUnreadUI
     }
+
+    // TODO(工作区行样式评审): A/B/C 定稿后连同 DebugLaunchConfiguration 里的两个字段一起删除。
+    var shouldSeedDebugDenseWorkspaceUI: Bool {
+        debugLaunchConfiguration.seedsDenseWorkspaceUI
+    }
 #endif
 
     func client() throws -> AgentAPIClient {

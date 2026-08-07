@@ -196,45 +196,6 @@ struct SessionPinnedBadge: View {
     }
 }
 
-/// 会话索引只用品牌图标表达运行时身份，避免名称胶囊和标题争夺横向空间。
-/// 尺寸由使用方传入，以便与同一行的 Git 图标保持一致；运行态保留品牌色，
-/// 历史态统一降为灰色，让颜色只承担“仍在进行”的状态提示。
-struct SessionRuntimeIcon: View {
-    let presentation: SessionRuntimePresentation
-    let size: CGFloat
-    let isActive: Bool
-
-    init(session: AgentSession, size: CGFloat, isActive: Bool) {
-        presentation = SessionRuntimePresentation(session: session)
-        self.size = size
-        self.isActive = isActive
-    }
-
-    var body: some View {
-        Image(presentation.brandAssetName)
-            .resizable()
-            .renderingMode(.original)
-            .scaledToFit()
-            .frame(width: renderedSize, height: renderedSize)
-            .frame(width: size, height: size)
-            .grayscale(isActive ? 0 : 1)
-            .opacity(isActive ? 0.92 : 0.46)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(presentation.title)
-            .fixedSize()
-    }
-
-    private var renderedSize: CGFloat {
-        switch presentation.kind {
-        case .codex:
-            // ChatGPT 位图自带透明内边距；只放大图形，不扩大元数据行的布局占位。
-            return size * 1.35
-        case .claude:
-            return size
-        }
-    }
-}
-
 /// 使用 Codex 与 Claude Code 桌面端都采用的经典三节点分支拓扑。
 /// 自绘可以避免 SF Symbol 的三角轮廓，同时维持小尺寸下的圆角描边与清晰度。
 struct SessionBranchIcon: View {

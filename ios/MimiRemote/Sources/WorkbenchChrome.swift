@@ -606,9 +606,9 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
-        // iPad mini 竖屏虽然会退成单列导航，但 744/768pt 仍足以承载与横屏
-        // 收起侧栏后一致的会话表格；只有真正窄的分屏 / Slide Over 才回退 compact。
-        prefersSessionTableDensity = isPad && containerWidth >= 700
+        // 会话行只按可用宽度选密度，不按设备类型：iPhone 竖屏与 iPad 竖屏读的是同一批对象，
+        // 没有理由把项目锚点在手机上缩成 12pt。只有 Slide Over 这类真正窄的窗口才回退 compact。
+        prefersSessionTableDensity = containerWidth >= 360
     }
 }
 

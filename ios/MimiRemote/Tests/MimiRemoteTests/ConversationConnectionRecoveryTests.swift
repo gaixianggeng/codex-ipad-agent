@@ -964,6 +964,103 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
     }
 
+    func testSessionLibraryGlobalDiscoveryPreservesKnownWorkspaceIdentityWhenSelectedRefreshIsSkipped() async {
+        let rootProject = AgentProject(
+            id: "proj_library_identity_root",
+            name: "proj_library_identity_root",
+            path: "/Users/test/code/proj_library_identity_root"
+        )
+        let workspace = makeChildWorkspace(
+            id: "ws_library_identity",
+            name: "identity-worktree",
+            root: rootProject
+        )
+        let canonical = AgentSession(
+            id: "thread_library_identity_existing",
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: workspace.path,
+            title: "已加载工作区会话",
+            status: "history",
+            source: "codex",
+            resumeID: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let globalExisting = AgentSession(
+            id: canonical.id,
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: "/tmp/unknown-root-dir",
+            title: canonical.title,
+            status: canonical.status,
+            source: canonical.source,
+            resumeID: canonical.resumeID,
+            createdAt: canonical.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 3)
+        )
+        let globalPathMatched = AgentSession(
+            id: "thread_library_identity_by_path",
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: workspace.path,
+            title: "按目录命中的会话",
+            status: "history",
+            source: "codex",
+            resumeID: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 3)
+        )
+        let globalUnknownExternal = AgentSession(
+            id: "thread_library_identity_unknown_external",
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: "/Users/test/code/another-worktree",
+            title: "未知外部工作树",
+            status: "history",
+            source: "codex",
+            resumeID: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 3)
+        )
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            projectPages: [rootProject.id: SessionsPage(sessions: [canonical])],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: [globalExisting, globalPathMatched, globalUnknownExternal])
+            }
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [workspace],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.selectedProjectID = workspace.id
+
+        await store.refreshAll(autoAttach: false)
+        XCTAssertEqual(store.sessions(forProjectID: workspace.id).map(\.id), [canonical.id])
+        XCTAssertEqual(store.alignSessionToKnownWorkspace(globalPathMatched).projectID, workspace.id)
+
+        await store.refreshSessionLibraryIndex()
+
+        // 当前工作区首屏已有结果，因此精确 workspace 请求被跳过；不能依靠后写的精确页
+        // 把全局响应“修正”回来，两个全局结果本身都必须在 merge 前稳定到 workspace.id。
+        XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id])
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [workspace.id])
+        XCTAssertEqual(store.sessionsByID[canonical.id]?.projectID, workspace.id)
+        XCTAssertEqual(store.sessionsByID[globalPathMatched.id]?.projectID, workspace.id)
+        // 没有 recent workspace 或 dir 命中的受控外部 worktree 仍保留 root projectID，
+        // 不能因为统一 identity 而误删或伪造工作区归属。
+        XCTAssertEqual(store.sessionsByID[globalUnknownExternal.id]?.projectID, rootProject.id)
+    }
+
     func testSessionLibrarySerializesBackgroundWorkspaceRequests() async throws {
         let firstProject = makeProject(id: "proj_library_serial_first")
         let secondProject = makeProject(id: "proj_library_serial_second")

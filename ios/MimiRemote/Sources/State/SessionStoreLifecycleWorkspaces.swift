@@ -230,6 +230,12 @@ extension SessionStore {
             )
         ]
 
+        // TODO(工作区行样式评审): 只用于 A/B/C 三版对比截图，需要十行左右才能看出密度差别。
+        // 定稿后连同 --debug-seed-dense-workspace-ui 一起删除。
+        let seededSessions: [AgentSession] = appStore.shouldSeedDebugDenseWorkspaceUI
+            ? sessions + debugDenseWorkspaceSessions(workspace: mimiDemo, now: now)
+            : sessions
+
         isLoading = false
         setErrorMessage(nil)
         setStatusMessage(L10n.text("ui.debug_ui_sample_loaded"))
@@ -276,9 +282,9 @@ extension SessionStore {
         )
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
-        replaceSessionsIfChanged(with: sessions, projectID: nil)
+        replaceSessionsIfChanged(with: seededSessions, projectID: nil)
         if appStore.shouldSeedDebugHistoryUnreadUI,
-           var unreadCandidate = sessions.first(where: { $0.id == historySessionID }) {
+           var unreadCandidate = seededSessions.first(where: { $0.id == historySessionID }) {
             // 先让未选中的历史会话经历一次“运行中 → 新完成”，以复用生产判定链路。
             // 该参数只服务 iPhone/iPad 运行态验收，不污染普通 Debug 种子与快照。
             unreadCandidate.status = SessionStatus.running.rawValue
@@ -357,6 +363,43 @@ extension SessionStore {
             )
         ]
         rebuildProjectSessionListSnapshots()
+    }
+
+    /// TODO(工作区行样式评审): 定稿后删除。
+    /// 标题长度、分支长度和状态分布刻意贴近真机首屏，否则密度和截断问题看不出来。
+    func debugDenseWorkspaceSessions(workspace: AgentWorkspace, now: Date) -> [AgentSession] {
+        let fixtures: [(String, String, String, Int, String)] = [
+            ("等待确认部署权限", "main", SessionStatus.waitingForApproval.rawValue, 2, "Agent 正在等待你批准写入 launchd 配置。"),
+            ("这两个应该是一回事，确认下是不是同一个根因", "main", SessionStatus.completed.rawValue, 46, "两处都落在 relay 重连的同一段止损逻辑里。"),
+            ("排查 MIM82 Claude 未响应", "codex/mim-81-mim-82-main-integration", SessionStatus.failed.rawValue, 47, "bridge 起来了但没握手，日志停在 handshake 之前。"),
+            ("查看待办 Issue 状态", "codex/mim-109-performance-optimization", SessionStatus.completed.rawValue, 74, "还有 6 条在 In Progress，2 条等验收。"),
+            ("参考 Seedex 网站设计", "main", SessionStatus.completed.rawValue, 79, "首屏留白和字重层级值得抄，配色不合适。"),
+            ("确认 MIM-99 是否已合并", "main", SessionStatus.completed.rawValue, 283, "已经合进 main，标签也打了。"),
+            ("Luna 多轮验收与全项目回归", "codex/mim-99-center-token-usage-card", SessionStatus.running.rawValue, 284, "正在跑第三轮，前两轮都过了。"),
+            ("为设置页 Token 加载增加骨架屏", "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 295, "首屏空窗从 800ms 缩到看不见。"),
+            ("查看 MIM-104 会话页改版进度", "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 335, "发丝线和日期分桶已经上了。")
+        ]
+
+        return fixtures.enumerated().map { index, fixture in
+            let (title, branch, status, minutesAgo, preview) = fixture
+            let updatedAt = now.addingTimeInterval(TimeInterval(-60 * minutesAgo))
+            return AgentSession(
+                id: "debug-dense-\(index)",
+                projectID: workspace.id,
+                project: workspace.name,
+                dir: workspace.path,
+                title: title,
+                status: status,
+                source: "debug",
+                runtimeProvider: "codex",
+                resumeID: "debug-dense-\(index)",
+                createdAt: updatedAt.addingTimeInterval(-60 * 30),
+                updatedAt: updatedAt,
+                preview: preview,
+                activeTurnID: status == SessionStatus.running.rawValue ? "debug-dense-turn-\(index)" : nil,
+                context: SessionContextSnapshot(git: SessionContextGitInfo(branch: branch))
+            )
+        }
     }
 
     func seedDebugConversationMessages(sessionID: SessionID, now: Date) {

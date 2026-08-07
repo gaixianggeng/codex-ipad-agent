@@ -1009,7 +1009,8 @@ struct UnifiedWorkbenchShell: View {
             },
             manageConnections: manageConnections,
             prefersTableDensity: layout.prefersSessionTableDensity,
-            hidesNavigationTitle: layout.prefersSessionTableDensity,
+            // 只有侧栏在场时标题才是重复表达；单列导航没有侧栏，隐藏标题会让顶栏失去页面身份。
+            hidesNavigationTitle: !layout.usesCompactNavigation,
             bottomContentMargin: layout.usesCompactNavigation ? 84 : 16,
             newSessionPresentationNamespace: presentationNamespace
         )
