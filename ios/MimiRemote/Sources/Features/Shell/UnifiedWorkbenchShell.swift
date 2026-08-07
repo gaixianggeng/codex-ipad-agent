@@ -1,10 +1,5 @@
 import SwiftUI
 
-private struct WorkbenchNavigationCommit {
-    let state: WorkbenchNavigationState
-    let effect: WorkbenchNavigationEffect?
-}
-
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
@@ -1998,20 +1993,5 @@ private struct NewSessionSheet: View {
         didLeaveSheetForCreation = true
         dismiss()
         onCreated(sessionID)
-    }
-}
-
-private struct NewSessionPresentationModifier: ViewModifier {
-    let isCompact: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isCompact {
-            content
-                .presentationDetents([.height(430), .large])
-                .presentationDragIndicator(.visible)
-        } else {
-            content.presentationSizing(.form)
-        }
     }
 }

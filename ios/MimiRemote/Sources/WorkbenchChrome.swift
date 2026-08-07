@@ -84,6 +84,12 @@ enum WorkbenchNavigationEffect: Equatable {
     case selectSession(SessionID)
 }
 
+/// 先在副本中计算导航状态和副作用，再一起提交给 SwiftUI。
+struct WorkbenchNavigationCommit {
+    let state: WorkbenchNavigationState
+    let effect: WorkbenchNavigationEffect?
+}
+
 enum WorkbenchNavigationEvent: Equatable {
     case open(AppDestination, source: WorkbenchRootPage?)
     case synchronize(WorkbenchRestorationRoute)
