@@ -31,6 +31,10 @@ set -euo pipefail
 OLD_ARCHIVE_REPO="gaixianggeng/mimi-remote"
 BACKUP_ROOT="/secure/offline/mimi-remote-history-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_ROOT/releases" "$BACKUP_ROOT/github/pulls"
+for command_name in gh git jq shasum; do
+  command -v "$command_name" >/dev/null \
+    || { echo "缺少备份命令：$command_name" >&2; exit 1; }
+done
 gh auth status
 
 # 备份历史仓库完整 refs，并生成可独立校验的 bundle。
@@ -98,17 +102,54 @@ diff -u \
 
 for tag in "${expected_tags[@]}"; do
   git -C "$BACKUP_ROOT/repository" show-ref --tags --verify "refs/tags/$tag"
-  mkdir -p "$BACKUP_ROOT/releases/$tag"
+  release_dir="$BACKUP_ROOT/releases/$tag"
+  asset_dir="$release_dir/assets"
+  mkdir -p "$asset_dir"
   gh release view "$tag" --repo "$OLD_ARCHIVE_REPO" \
     --json name,tagName,targetCommitish,body,isDraft,isPrerelease,createdAt,publishedAt,url,assets \
     --jq '{name, tag: .tagName, target_commitish: .targetCommitish, body, draft: .isDraft, prerelease: .isPrerelease, created_at: .createdAt, published_at: .publishedAt, url, assets: [.assets[] | {name, size, url}]}' \
-    | tee "$BACKUP_ROOT/releases/$tag/metadata.json"
+    | tee "$release_dir/metadata.json"
   # 同时保留 GitHub 原始 Release API JSON，覆盖作者、正文、目标提交和资产 API 元数据，便于必要时恢复。
   gh api "repos/$OLD_ARCHIVE_REPO/releases/tags/$tag" \
-    > "$BACKUP_ROOT/releases/$tag/release-api.json"
+    > "$release_dir/release-api.json"
   gh release download "$tag" --repo "$OLD_ARCHIVE_REPO" \
-    --dir "$BACKUP_ROOT/releases/$tag" --clobber
-  find "$BACKUP_ROOT/releases/$tag" -type f -print | sort
+    --dir "$asset_dir" --clobber
+
+  # 每个版本都必须逐项通过：API 附件清单与下载结果一致，且每个非 checksum 附件都有已验证的 SHA-256。
+  jq -e '.assets | length > 0' "$release_dir/release-api.json" >/dev/null
+  jq -r '.assets[].name' "$release_dir/release-api.json" \
+    | LC_ALL=C sort > "$release_dir/expected-assets.txt"
+  (
+    cd "$asset_dir"
+    find . -type f -print | sed 's#^\./##' | LC_ALL=C sort
+  ) > "$release_dir/actual-assets.txt"
+  diff -u "$release_dir/expected-assets.txt" "$release_dir/actual-assets.txt"
+
+  [[ -f "$asset_dir/checksums.txt" ]] \
+    || { echo "$tag 缺少 checksums.txt，备份已停止。" >&2; exit 1; }
+  : > "$release_dir/checksum-targets.txt"
+  (
+    cd "$asset_dir"
+    shasum -a 256 -c checksums.txt
+    awk 'NF >= 2 { print $2 }' checksums.txt \
+      >> "$release_dir/checksum-targets.txt"
+    for checksum_file in *.sha256; do
+      [[ -e "$checksum_file" ]] || continue
+      shasum -a 256 -c "$checksum_file"
+      awk 'NF >= 2 { print $2 }' "$checksum_file" \
+        >> "$release_dir/checksum-targets.txt"
+    done
+  )
+  LC_ALL=C sort -u "$release_dir/checksum-targets.txt" \
+    -o "$release_dir/checksum-targets.txt"
+  jq -r '.assets[].name | select(. != "checksums.txt" and (endswith(".sha256") | not))' \
+    "$release_dir/release-api.json" \
+    | LC_ALL=C sort > "$release_dir/expected-checksum-targets.txt"
+  diff -u \
+    "$release_dir/expected-checksum-targets.txt" \
+    "$release_dir/checksum-targets.txt"
+
+  find "$release_dir" -type f -print | sort
 done
 
 # 记录备份文件摘要，尤其确认每个 Release 的 checksum/sha256 sidecar 已落盘。
@@ -117,7 +158,13 @@ done
   find . -type f ! -name 'SHA256SUMS.txt' -print | LC_ALL=C sort | \
     while IFS= read -r path; do shasum -a 256 "$path"; done
 ) > "$BACKUP_ROOT/SHA256SUMS.txt"
-rg -n -i 'checksum|sha256|\.sha256' "$BACKUP_ROOT/releases"
+for tag in "${expected_tags[@]}"; do
+  release_dir="$BACKUP_ROOT/releases/$tag"
+  diff -u "$release_dir/expected-assets.txt" "$release_dir/actual-assets.txt"
+  diff -u \
+    "$release_dir/expected-checksum-targets.txt" \
+    "$release_dir/checksum-targets.txt"
+done
 ```
 
 **确认点 1（不得跳过）**：维护者和第二位复核者共同确认：8 个版本（`v0.1.0`–`v0.1.4`、`v0.2.0`–`v0.2.2`）的 tag 和 Release 均存在；`expected-tags.txt` 与 `actual-release-tags.txt` 无差异；每个 Release 的 `metadata.json` 和 `release-api.json` 已保存正文、目标提交、发布状态、时间、作者与附件元数据，附件及 checksum 与线上记录一致；`github/repository-api.json`、`issues-and-pulls-api.json` 与每个 `github/pulls/<编号>/` 目录可读取，旧仓库当前唯一已合并 PR #1 的正文、作者、merge 信息、Review、评论、CI 结果、文件、提交与 patch 均已保存；`mimi-remote-history.bundle`、GitHub 元数据目录、Release 目录和 `SHA256SUMS.txt` 已复制到离线介质并可独立读取。确认记录完成前，不得删除旧归档仓库。

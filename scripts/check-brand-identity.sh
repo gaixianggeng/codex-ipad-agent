@@ -17,15 +17,30 @@ fail() {
 tracked_text_matches() {
   local pattern="$1"
   local allow_runbook="${2:-0}"
-  local path
-  while IFS= read -r -d '' path; do
-    [[ -f "$path" ]] || continue
-    [[ "$path" == "$SCRIPT_PATH" ]] && continue
-    [[ "$allow_runbook" == "1" && "$path" == "$RENAME_RUNBOOK_PATH" ]] && continue
-    if grep -FIil "$pattern" "$path" >/dev/null 2>&1; then
-      printf '%s\n' "$path"
-    fi
-  done < <(git ls-files -z)
+  local matches
+  local status
+  local -a pathspecs=(
+    .
+    ":(exclude)$SCRIPT_PATH"
+  )
+
+  if [[ "$allow_runbook" == "1" ]]; then
+    pathspecs+=(":(exclude)$RENAME_RUNBOOK_PATH")
+  fi
+
+  # 使用单次 git grep 批量扫描 Git 跟踪的文本文件，避免按文件启动数千个 grep 进程。
+  if matches="$(git grep -I -l -F -- "$pattern" -- "${pathspecs[@]}")"; then
+    printf '%s\n' "$matches"
+    return 0
+  else
+    status=$?
+  fi
+
+  # git grep 退出码 1 表示没有匹配，不是门禁执行失败。
+  if [[ "$status" -eq 1 ]]; then
+    return 0
+  fi
+  return "$status"
 }
 
 assert_no_global_match() {
