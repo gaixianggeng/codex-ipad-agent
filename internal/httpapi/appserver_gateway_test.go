@@ -1341,6 +1341,129 @@ func TestAppServerGatewayRejectsUnsafeMethodWithoutForwarding(t *testing.T) {
 	assertNoUpstreamFrame(t, received)
 }
 
+func TestAppServerGatewayCachesAccountTokenUsageAcrossConnections(t *testing.T) {
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var request appServerGatewayFrame
+		if json.Unmarshal(payload, &request) != nil || request.Method != "account/usage/read" {
+			return
+		}
+		response, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result": map[string]any{
+				"summary": map[string]any{"lifetimeTokens": 123456},
+				"dailyUsageBuckets": []map[string]any{{
+					"startDate": "2026-08-06",
+					"tokens":    789,
+				}},
+			},
+		})
+		_ = conn.WriteMessage(messageType, response)
+	})
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	first := dialAuthedGateway(t, server.URL)
+	if err := first.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	firstResponse := readGatewayRaw(t, first)
+	if !bytes.Contains(firstResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("首次上游响应应返回 Token 快照：%s", firstResponse)
+	}
+	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"method":"account/usage/read"`)) {
+		t.Fatalf("首次请求应转发到 upstream：%s", got)
+	}
+	_ = first.Close()
+
+	second := dialAuthedGateway(t, server.URL)
+	defer second.Close()
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	secondResponse := readGatewayRaw(t, second)
+	var cached struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(secondResponse, &cached); err != nil {
+		t.Fatal(err)
+	}
+	if string(cached.ID) != "2" || !bytes.Contains(cached.Result, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("缓存响应必须替换为当前请求 id 并保留快照：%s", secondResponse)
+	}
+	assertNoUpstreamFrame(t, received)
+
+	// 用户点击刷新时必须绕过仍在 TTL 内的快照；私有提示不能泄露给严格校验的上游 schema。
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":3,"method":"account/usage/read","params":{"mimiForceRefresh":true}}`)); err != nil {
+		t.Fatal(err)
+	}
+	forcedResponse := readGatewayRaw(t, second)
+	if !bytes.Contains(forcedResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("强制刷新应返回真实上游快照：%s", forcedResponse)
+	}
+	forcedUpstream := readUpstreamFrame(t, received)
+	var forwarded map[string]json.RawMessage
+	if err := json.Unmarshal(forcedUpstream, &forwarded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := forwarded["params"]; ok || !bytes.Contains(forcedUpstream, []byte(`"id":3`)) {
+		t.Fatalf("强制刷新应转发到 upstream 且剥离私有 params：%s", forcedUpstream)
+	}
+
+	// TTL 过期后恢复真实上游读取，确保缓存不会永久冻结展示数据。
+	router.accountTokenUsageMu.Lock()
+	router.accountTokenUsageCachedAt = time.Now().Add(-2 * time.Hour)
+	router.accountTokenUsageMu.Unlock()
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":4,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = readGatewayRaw(t, second)
+	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"id":4`)) {
+		t.Fatalf("过期请求应重新转发到 upstream：%s", got)
+	}
+}
+
+func TestAppServerGatewayDoesNotCacheFailedAccountTokenUsage(t *testing.T) {
+	var requests atomic.Int64
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var request appServerGatewayFrame
+		if json.Unmarshal(payload, &request) != nil || request.Method != "account/usage/read" {
+			return
+		}
+		requests.Add(1)
+		response, _ := json.Marshal(map[string]any{
+			"id": request.ID,
+			"error": map[string]any{
+				"code":    -32000,
+				"message": "usage unavailable",
+			},
+		})
+		_ = conn.WriteMessage(messageType, response)
+	})
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	for _, id := range []int{10, 11} {
+		request := fmt.Sprintf(`{"id":%d,"method":"account/usage/read"}`, id)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+			t.Fatal(err)
+		}
+		response := readGatewayRaw(t, conn)
+		if !bytes.Contains(response, []byte(`"usage unavailable"`)) {
+			t.Fatalf("失败响应应原样返回：%s", response)
+		}
+		_ = readUpstreamFrame(t, received)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("失败响应不能进入缓存，upstream requests=%d", requests.Load())
+	}
+}
+
 func TestAppServerGatewayRejectsUnauthorizedThreadIDWithoutForwarding(t *testing.T) {
 	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
 	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)

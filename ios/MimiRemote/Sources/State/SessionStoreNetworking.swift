@@ -167,6 +167,7 @@ protocol SessionStoreAPIClient {
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch
 }
 
 extension SessionStoreAPIClient {
@@ -224,6 +225,10 @@ extension SessionStoreAPIClient {
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         // 没有实现该能力的客户端是“不提供”，不是“请求失败”。
         .unsupported
+    }
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
+        // 兼容旧客户端与测试替身；生产客户端会覆盖该方法并把强制刷新提示传到 agentd。
+        try await refreshAccountTokenUsage()
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []

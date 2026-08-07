@@ -78,6 +78,12 @@ type Router struct {
 	claudeRuntimeQuotaMu        sync.RWMutex
 	claudeRuntimeQuota          *runtimeRateLimits
 	claudeRuntimeQuotaCheckedAt time.Time
+	// Token 活动只是低频展示数据。缓存成功响应可以让 iOS 重进「我的」页或重连后
+	// 立即拿到最近快照，避免每次都等待 account/usage/read 的慢查询。
+	accountTokenUsageMu       sync.RWMutex
+	accountTokenUsageResult   json.RawMessage
+	accountTokenUsageCachedAt time.Time
+	accountTokenUsageCacheTTL time.Duration
 
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
@@ -188,6 +194,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
+		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
 	r.refreshClaudeBridgeProbe(false)
