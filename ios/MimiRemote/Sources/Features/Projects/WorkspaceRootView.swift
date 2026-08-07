@@ -1724,7 +1724,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityIdentifier("workspace.sessions.loadMore")
     }
 
-    /// 一行同时承担两件事：左端用当前运行时开新会话，右端切换运行时。
+    /// 一行同时承担两件事：左端图标用当前运行时开新会话，右端切换运行时。
     /// Codex/Claude 这个维度整屏只出现一次，主操作也不再占用独立的大卡片。
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
@@ -1744,21 +1744,13 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "square.and.pencil")
-                    .font(themeStore.uiFont(.footnote, weight: .semibold))
-                Text(L10n.text("ui.new_session"))
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(tokens.primaryText)
-            .padding(.horizontal, 14)
-            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
-            .background { WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens) }
-            .contentShape(Capsule())
+            WorkbenchChromeIcon(systemName: "square.and.pencil")
+                .foregroundStyle(tokens.primaryText)
+                .workbenchChromeCircle(tokens: tokens)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(selectedRuntime.title)
+        .accessibilityLabel(L10n.text("ui.new_session"))
+        .accessibilityValue(selectedRuntime.title)
         .accessibilityIdentifier("workspace.sessions.newSession")
     }
 

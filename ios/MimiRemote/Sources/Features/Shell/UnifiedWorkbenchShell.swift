@@ -260,7 +260,8 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.me)
         }
-        // 原生 Tab 保留系统交互，但用更厚的材质遮住其后的列表文字；关闭透明度时退成等尺寸实色。
+        // 原生 Tab 保留系统交互，并用更厚的材质遮住其后的列表文字；关闭透明度时退成等尺寸实色。
+        // 不再叠加全宽渐变：它会在浮动栏外形成水平色带，并在详情页隐藏 Tab Bar 后继续覆盖 Composer。
         .toolbarBackground(
             reduceTransparency
                 ? AnyShapeStyle(tokens.elevatedSurface)
@@ -270,14 +271,6 @@ struct UnifiedWorkbenchShell: View {
         .toolbarBackground(.visible, for: .tabBar)
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
         .environment(\.workbenchHasCompactTabBar, true)
-        .overlay(alignment: .bottom) {
-            WorkbenchTabBarScrollEdgeScrim(
-                tokens: tokens,
-                bottomSafeAreaInset: bottomSafeAreaInset
-            )
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)

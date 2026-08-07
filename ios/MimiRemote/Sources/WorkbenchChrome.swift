@@ -1343,40 +1343,6 @@ extension View {
     }
 }
 
-/// 只柔化浮动栏上缘，不覆盖系统 Tab Bar 本身；栏内的不可读性继续交给原生厚材质。
-struct WorkbenchTabBarScrollEdgeScrim: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
-    let tokens: ThemeTokens
-    let bottomSafeAreaInset: CGFloat
-
-    var body: some View {
-        LinearGradient(
-            colors: [
-                tokens.background.opacity(0),
-                tokens.background.opacity(scrimOpacity),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .frame(height: 36)
-        .padding(
-            .bottom,
-            WorkbenchPageLayout.compactTabBarVisualHeight
-                + max(WorkbenchPageLayout.compactTabBarMinimumSafeArea, bottomSafeAreaInset)
-                - 6
-        )
-    }
-
-    private var scrimOpacity: Double {
-        if reduceTransparency {
-            return 1
-        }
-        return colorSchemeContrast == .increased ? 0.88 : 0.62
-    }
-}
-
 struct StatusPill: View {
     enum Kind {
         case success
