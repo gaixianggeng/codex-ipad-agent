@@ -29,7 +29,7 @@ tracked_text_matches() {
   fi
 
   # 使用单次 git grep 批量扫描 Git 跟踪的文本文件，避免按文件启动数千个 grep 进程。
-  if matches="$(git grep -I -l -F -- "$pattern" -- "${pathspecs[@]}")"; then
+  if matches="$(git grep -I -i -l -F -- "$pattern" -- "${pathspecs[@]}")"; then
     printf '%s\n' "$matches"
     return 0
   else
