@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
 
 func TestConfigureClaudeAutoEnablesReadyRuntimeAndPreservesConfig(t *testing.T) {
@@ -208,7 +210,8 @@ func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) s
 	root := t.TempDir()
 	bridge := filepath.Join(root, "alleycat-claude-bridge")
 	claude := filepath.Join(root, "claude")
-	writeExecutableFixture(t, bridge, "printf 'alleycat-claude-bridge 0.2.6\\n'\n")
+	// 测试夹具跟随 agentd 的最低兼容版本，避免能力门禁升级后测试仍伪装成旧 bridge。
+	writeExecutableFixture(t, bridge, "printf 'alleycat-claude-bridge "+claudebridge.MinimumVersion+"\\n'\n")
 	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then exit "+strconv.Itoa(authExit)+"; fi\nprintf 'claude 2.1.220\\n'\n")
 	configPath := filepath.Join(root, "config.json")
 	document := map[string]any{

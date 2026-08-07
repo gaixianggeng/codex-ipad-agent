@@ -3,6 +3,26 @@ set -euo pipefail
 
 REQUIRE_NOTARIZATION=0
 DMG_PATH=""
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+version_at_least() {
+  local actual="$1"
+  local minimum="$2"
+  local actual_major actual_minor actual_patch
+  local minimum_major minimum_minor minimum_patch
+
+  IFS=. read -r actual_major actual_minor actual_patch <<<"$actual"
+  IFS=. read -r minimum_major minimum_minor minimum_patch <<<"$minimum"
+  if (( 10#$actual_major != 10#$minimum_major )); then
+    (( 10#$actual_major > 10#$minimum_major ))
+    return
+  fi
+  if (( 10#$actual_minor != 10#$minimum_minor )); then
+    (( 10#$actual_minor > 10#$minimum_minor ))
+    return
+  fi
+  (( 10#$actual_patch >= 10#$minimum_patch ))
+}
 
 usage() {
   cat <<'EOF'
@@ -84,7 +104,27 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
 "$AGENT_PATH" version >/dev/null
-"$BRIDGE_PATH" --version >/dev/null
+bridge_version_output="$("$BRIDGE_PATH" --version)"
+if [[ "$bridge_version_output" =~ ^alleycat-claude-bridge[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  bridge_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+else
+  echo "Mac 安装包校验失败：Claude bridge 未返回标准版本：${bridge_version_output}" >&2
+  exit 1
+fi
+
+minimum_version_source="$ROOT_DIR/internal/claudebridge/version.go"
+minimum_bridge_version="$(
+  sed -nE 's/^[[:space:]]*MinimumVersion[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' \
+    "$minimum_version_source"
+)"
+if [[ ! "$minimum_bridge_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Mac 安装包校验失败：无法从 agentd 源码读取 Claude bridge 最低版本。" >&2
+  exit 1
+fi
+if ! version_at_least "$bridge_version" "$minimum_bridge_version"; then
+  echo "Mac 安装包校验失败：Claude bridge ${bridge_version} 低于 agentd 要求的 ${minimum_bridge_version}。" >&2
+  exit 1
+fi
 
 for binary_path in "$APP_PATH/Contents/MacOS/Mimi Remote Mac" "$AGENT_PATH" "$BRIDGE_PATH"; do
   binary_archs="$(lipo -archs "$binary_path")"
@@ -124,4 +164,4 @@ if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
   spctl --assess --type execute --verbose=4 "$APP_PATH"
 fi
 
-echo "Mac 安装包校验通过：universal App、agentd、Claude bridge、LaunchAgent、拖放入口和签名结构完整。"
+echo "Mac 安装包校验通过：universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整。"

@@ -665,12 +665,12 @@ final class HostStore {
         switch services.agentStatus() {
         case .enabled:
             try await unregisterMacAgentAndWait(endpoint: endpoint)
-        case .notRegistered:
+        case .notRegistered, .notFound:
+            // main 已把 `.notFound` 视为 BTM 记录缺失等可恢复状态；配置重载时
+            // 直接重新登记，让统一注册流程负责资源校验和自动修复。
             break
         case .requiresApproval:
             throw ServiceLifecycleError.requiresApproval
-        case .notFound:
-            throw ServiceLifecycleError.agentNotFound
         }
         owner = .macApp
         try await registerMacAgentAndWaitForReady()

@@ -164,6 +164,10 @@ grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
+grep -Fq 'internal/claudebridge/version.go' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有读取 agentd 的 Claude bridge 最低版本。"
+grep -Fq 'version_at_least "$bridge_version" "$minimum_bridge_version"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Claude bridge 与 agentd 的版本兼容性。"
 grep -Fq 'gh release upload "$GITHUB_REF_NAME"' .github/workflows/release.yml \
   || fail "Release workflow 没有上传 Mac DMG 到 GitHub Release。"
 grep -Fq 'scripts/package-skill.sh' .github/workflows/release.yml \
