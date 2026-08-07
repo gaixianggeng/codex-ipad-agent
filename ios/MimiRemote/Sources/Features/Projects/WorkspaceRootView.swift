@@ -1531,8 +1531,8 @@ private enum WorkspaceSessionRowMetrics {
     static let separatorInset: CGFloat = horizontalPadding + railWidth + railSpacing
 }
 
-/// 会话按「现在要不要你」分三段。分组卡只包需要处理和正在运行两段：
-/// 它们代表一个明确的语义（这些会话现在需要你关注），历史会话继续通栏平铺。
+/// 会话按「现在要不要你」分三段。三段共用同一套分组容器，状态差异只由
+/// 行内导轨和文案表达，避免一部分有实体背景、另一部分直接铺在页面上造成视觉失衡。
 enum WorkspaceSessionGroup: String, CaseIterable {
     case needsAttention
     case running
@@ -1546,22 +1546,6 @@ enum WorkspaceSessionGroup: String, CaseIterable {
             return L10n.text("ui.workspace_group_running")
         case .recent:
             return L10n.text("ui.workspace_group_recent")
-        }
-    }
-
-    /// 只有需要处理和正在运行用弱分组卡；历史区不加外层容器，也不逐条加卡。
-    var usesGroupedCard: Bool { self != .recent }
-
-    /// 「需要处理」要能一眼看到，容器比「正在运行」再实一点。
-    /// 两者都只比页面底亮一档：卡片要读成「浮起来一点的区域」，不是独立组件。
-    var cardFillOpacity: Double {
-        switch self {
-        case .needsAttention:
-            return 1
-        case .running:
-            return 0.6
-        case .recent:
-            return 0
         }
     }
 
@@ -1607,30 +1591,24 @@ private enum WorkspaceSessionRailState {
     }
 }
 
-/// 弱分组卡：用 `surface` 而不是 `elevatedSurface`，只比页面底亮一档。
-/// elevatedSurface 是输入面板那一层，用在这里背景差太大，整页会读成设置页的 Grouped List。
-/// 圆角也收到 12：曲率越大越像一个独立组件，越小越像一块浮起来的区域。
-/// 历史段返回原视图，历史区不加任何外层容器。
-private struct WorkspaceSessionGroupCard: ViewModifier {
-    let group: WorkspaceSessionGroup
+/// 工作区会话的统一内容面板。容器只承担分组，不承担状态编码：浅色用白色 Surface
+/// 稳住下半屏，深色只比页面底亮一档，避免连续分组读成三块高对比“黑砖”。
+/// 行本身没有圆角、填充或阴影，仍靠发丝线维持紧凑列表密度。
+private struct WorkspaceSessionGroupPanel: ViewModifier {
     let tokens: ThemeTokens
 
     private static let cornerRadius: CGFloat = 12
 
     func body(content: Content) -> some View {
-        if group.usesGroupedCard {
-            content
-                .background(
-                    tokens.surface.opacity(group.cardFillOpacity),
-                    in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                        .stroke(tokens.border.opacity(0.3), lineWidth: 0.5)
-                }
-        } else {
-            content
-        }
+        content
+            .background(
+                tokens.surface,
+                in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                    .stroke(tokens.border.opacity(0.22), lineWidth: 0.5)
+            }
     }
 }
 
@@ -1724,7 +1702,8 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
-    /// 需要处理 / 正在运行 / 最近会话三段。前两段带弱分组卡，历史段通栏平铺。
+    /// 需要处理 / 正在运行 / 最近会话三段共用分组级内容面板；
+    /// 面板内部仍是紧凑行与发丝线，不退回逐行卡片。
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(tokens: ThemeTokens) -> some View {
@@ -1811,7 +1790,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 loadMoreButton(tokens: tokens)
             }
         }
-        .modifier(WorkspaceSessionGroupCard(group: group, tokens: tokens))
+        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
     }
 
     private func loadMoreButton(tokens: ThemeTokens) -> some View {
@@ -1898,7 +1877,9 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 .font(themeStore.uiFont(.caption2, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .padding(.horizontal, 8)
-                .background(tokens.contentPanelBackground)
+                // 文案缺口必须与所在分组面板同色；使用更亮的 contentPanelBackground
+                // 会在深色最近会话中形成一条突兀的横向亮带。
+                .background(tokens.surface)
                 .fixedSize()
         }
         .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)
@@ -1936,6 +1917,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             }
         }
         .redacted(reason: .placeholder)
+        .modifier(WorkspaceSessionGroupPanel(tokens: tokens))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
