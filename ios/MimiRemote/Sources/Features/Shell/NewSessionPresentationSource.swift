@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// 只有持续可见、能稳定返回的点击入口才拥有系统 zoom source。
 enum NewSessionPresentationSource: String, CaseIterable, Hashable {
@@ -90,6 +90,22 @@ struct WorkbenchSheetPresentationState: Equatable {
 
     mutating func dismiss() {
         presentation = nil
+    }
+}
+
+/// 新建会话表单在紧凑布局使用可拖拽高度，宽屏沿用系统表单尺寸。
+struct NewSessionPresentationModifier: ViewModifier {
+    let isCompact: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isCompact {
+            content
+                .presentationDetents([.height(430), .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            content.presentationSizing(.form)
+        }
     }
 }
 

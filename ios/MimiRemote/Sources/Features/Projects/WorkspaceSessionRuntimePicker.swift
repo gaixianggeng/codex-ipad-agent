@@ -59,7 +59,7 @@ struct WorkspaceRuntimePicker: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isSelected = selection == choice
                 let isAvailable = choice != .claude || claudeChannelAvailable
@@ -80,21 +80,26 @@ struct WorkspaceRuntimePicker: View {
                             .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(isSelected ? tokens.primaryAction : tokens.secondaryText)
-                    .padding(.horizontal, 12)
-                    .frame(minWidth: 44, minHeight: 36)
-                    .background {
-                        if isSelected {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(tokens.surface)
-                                .shadow(color: Color.black.opacity(0.08), radius: 2, y: 1)
-                        }
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    // 三态同时使用层级、字重和透明度：灰度或 Increase Contrast 下，
+                    // 选中项仍靠 semibold，未选中可用项仍是可操作的 secondary，而非 disabled。
+                    .foregroundStyle(
+                        isSelected
+                            ? tokens.primaryAction
+                            : (isAvailable ? tokens.secondaryText : tokens.tertiaryText)
+                    )
+                    .opacity(
+                        isSelected
+                            ? 1
+                            : (isAvailable ? 0.60 : 0.42)
+                    )
+                    // 未选中项只是文字，不带任何容器；运行时的切换频率远低于切工作区，
+                    // 不该在顶部占一个胶囊的重量。
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!isAvailable)
-                .opacity(isAvailable ? 1 : 0.42)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityHint(
@@ -103,13 +108,6 @@ struct WorkspaceRuntimePicker: View {
                         : L10n.text("ui.runtime_unavailable_hint")
                 )
             }
-        }
-        .padding(4)
-        .frame(minHeight: 44)
-        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(tokens.border.opacity(0.72), lineWidth: 1)
         }
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityElement(children: .contain)

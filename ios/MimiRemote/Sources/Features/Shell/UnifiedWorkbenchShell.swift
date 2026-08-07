@@ -1,10 +1,5 @@
 import SwiftUI
 
-private struct WorkbenchNavigationCommit {
-    let state: WorkbenchNavigationState
-    let effect: WorkbenchNavigationEffect?
-}
-
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
@@ -54,7 +49,8 @@ struct UnifiedWorkbenchShell: View {
                 if layout.usesCompactNavigation {
                     compactLayout(
                         layout: layout,
-                        tokens: tokens
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else if layout.usesFloatingSidebarSurface {
                     floatingLayout(
@@ -216,11 +212,19 @@ struct UnifiedWorkbenchShell: View {
 
     private func compactLayout(
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
     ) -> some View {
-        TabView(selection: compactTabBinding(layout: layout)) {
+        let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
+            bottomSafeAreaInset: bottomSafeAreaInset
+        )
+
+        return TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
-                sessionList(layout: layout)
+                sessionList(
+                    layout: layout,
+                    bottomContentMargin: bottomChromeClearance
+                )
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
@@ -256,7 +260,8 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.me)
         }
-        // 原生 Tab 保留系统交互，但用更厚的材质遮住其后的列表文字；关闭透明度时退成等尺寸实色。
+        // 原生 Tab 保留系统交互，并用更厚的材质遮住其后的列表文字；关闭透明度时退成等尺寸实色。
+        // 不再叠加全宽渐变：它会在浮动栏外形成水平色带，并在详情页隐藏 Tab Bar 后继续覆盖 Composer。
         .toolbarBackground(
             reduceTransparency
                 ? AnyShapeStyle(tokens.elevatedSurface)
@@ -264,6 +269,8 @@ struct UnifiedWorkbenchShell: View {
             for: .tabBar
         )
         .toolbarBackground(.visible, for: .tabBar)
+        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
+        .environment(\.workbenchHasCompactTabBar, true)
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
@@ -996,7 +1003,10 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func sessionList(layout: WorkbenchLayout) -> some View {
+    private func sessionList(
+        layout: WorkbenchLayout,
+        bottomContentMargin: CGFloat? = nil
+    ) -> some View {
         let manageConnections: (() -> Void)? = layout.usesCompactNavigation
             ? { openConnectionSettings(layout: layout) }
             : nil
@@ -1014,8 +1024,12 @@ struct UnifiedWorkbenchShell: View {
             },
             manageConnections: manageConnections,
             prefersTableDensity: layout.prefersSessionTableDensity,
-            hidesNavigationTitle: layout.prefersSessionTableDensity,
-            bottomContentMargin: layout.usesCompactNavigation ? 84 : 16,
+            // 只有侧栏在场时标题才是重复表达；单列导航没有侧栏，隐藏标题会让顶栏失去页面身份。
+            hidesNavigationTitle: !layout.usesCompactNavigation,
+            bottomContentMargin: bottomContentMargin
+                ?? (layout.usesCompactNavigation
+                    ? WorkbenchPageLayout.defaultCompactBottomChromeClearance
+                    : 16),
             newSessionPresentationNamespace: presentationNamespace
         )
     }
@@ -1979,20 +1993,5 @@ private struct NewSessionSheet: View {
         didLeaveSheetForCreation = true
         dismiss()
         onCreated(sessionID)
-    }
-}
-
-private struct NewSessionPresentationModifier: ViewModifier {
-    let isCompact: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isCompact {
-            content
-                .presentationDetents([.height(430), .large])
-                .presentationDragIndicator(.visible)
-        } else {
-            content.presentationSizing(.form)
-        }
     }
 }

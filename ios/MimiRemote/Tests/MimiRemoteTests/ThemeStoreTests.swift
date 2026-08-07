@@ -505,7 +505,8 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
-        XCTAssertFalse(layout.prefersSessionTableDensity)
+        // iPhone 竖屏与 iPad 竖屏共用同一套会话行结构，项目锚点不再按设备缩小。
+        XCTAssertTrue(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
@@ -585,11 +586,21 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(widePhone.usesFloatingSidebarSurface)
         XCTAssertTrue(narrowPad.prefersSessionTableDensity)
         XCTAssertTrue(widePad.prefersSessionTableDensity)
-        XCTAssertFalse(widePhone.prefersSessionTableDensity)
+        XCTAssertTrue(widePhone.prefersSessionTableDensity)
     }
 
-    func testSessionTableDensityUsesCompactFallbackOnlyForNarrowIPadWindows() {
-        let narrowPad = WorkbenchLayout(
+    func testSessionTableDensityFallsBackOnlyBelowSlideOverWidth() {
+        let slideOverPad = WorkbenchLayout(
+            containerWidth: 320,
+            horizontalSizeClass: .compact,
+            isPad: true
+        )
+        let phonePortrait = WorkbenchLayout(
+            containerWidth: 390,
+            horizontalSizeClass: .compact,
+            isPad: false
+        )
+        let splitViewPad = WorkbenchLayout(
             containerWidth: 699,
             horizontalSizeClass: .compact,
             isPad: true
@@ -600,7 +611,10 @@ final class ResponsiveLayoutTests: XCTestCase {
             isPad: true
         )
 
-        XCTAssertFalse(narrowPad.prefersSessionTableDensity)
+        // 只有 Slide Over 这类真正窄的窗口才放弃锚点列；手机与分屏都保留同一套结构。
+        XCTAssertFalse(slideOverPad.prefersSessionTableDensity)
+        XCTAssertTrue(phonePortrait.prefersSessionTableDensity)
+        XCTAssertTrue(splitViewPad.prefersSessionTableDensity)
         XCTAssertTrue(portraitPad.prefersSessionTableDensity)
     }
 

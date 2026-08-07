@@ -125,7 +125,10 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(SettingsLayoutMetrics.accessibilityRowHeight, 76)
         XCTAssertEqual(SettingsLayoutMetrics.iconSlot, 28)
         XCTAssertEqual(SettingsLayoutMetrics.symbolPointSize, 18)
-        XCTAssertEqual(SettingsLayoutMetrics.statusModuleCornerRadius, 20)
+        XCTAssertEqual(
+            SettingsLayoutMetrics.statusModuleCornerRadius,
+            WorkbenchPageLayout.contentPanelCornerRadius
+        )
     }
 
     func testTokenCountFormatterUsesProductCompactUnits() {

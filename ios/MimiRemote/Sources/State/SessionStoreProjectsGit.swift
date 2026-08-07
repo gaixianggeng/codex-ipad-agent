@@ -1668,7 +1668,12 @@ extension SessionStore {
                     if expandedControlledIDs != controlledGlobalSessionIDs {
                         controlledGlobalSessionIDs = expandedControlledIDs
                     }
-                    mergeSessionPage(page.sessions)
+                    // 全局发现只携带根项目归属；进入 canonical sessions 前先沿用 Store
+                    // 已知的 workspace identity（已有同 ID 会话或 dir 命中 recent workspace）。
+                    // 否则同一 session.id 的全局响应会把稳定的 workspace projectID 覆盖回
+                    // root projectID，导致侧栏分组和会话头像命名空间在两种身份之间来回跳变。
+                    // 未命中的外部 worktree 仍返回原始 session，保留既有受控发现行为。
+                    mergeSessionPage(page.sessions.map(alignSessionToKnownWorkspace))
                     guard page.hasMore,
                           let nextCursor = page.nextCursor,
                           nextCursor != cursor else {

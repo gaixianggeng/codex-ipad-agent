@@ -11,6 +11,9 @@ struct DebugLaunchConfiguration {
     let seedsQueuedTurnsUI: Bool
     let seedsMCPApprovalUI: Bool
     let seedsHistoryUnreadUI: Bool
+    // TODO(工作区行样式评审): 只服务 A/B/C 三版对比截图，定稿后删除这两个字段。
+    let seedsDenseWorkspaceUI: Bool
+    let workspaceRowStyle: String?
     let hostPlatformPreview: HostPlatform?
     let endpoint: String?
     let token: String?
@@ -88,6 +91,8 @@ struct DebugLaunchConfiguration {
             || boolValue(environment["MIMI_DEBUG_SEED_MCP_APPROVAL_UI"])
         let seedsHistoryUnreadUI = arguments.contains("--debug-seed-history-unread-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_HISTORY_UNREAD_UI"])
+        let seedsDenseWorkspaceUI = arguments.contains("--debug-seed-dense-workspace-ui")
+            || boolValue(environment["MIMI_DEBUG_SEED_DENSE_WORKSPACE_UI"])
         let hostPlatformPreview = argumentValue(named: "--debug-host-platform", in: arguments)
             .map { HostPlatform(serverValue: $0) }
         return DebugLaunchConfiguration(
@@ -98,12 +103,16 @@ struct DebugLaunchConfiguration {
                 || boolValue(environment["MIMI_DEBUG_SEED_UI"])
                 || seedsQueuedTurnsUI
                 || seedsMCPApprovalUI
-                || seedsHistoryUnreadUI,
+                || seedsHistoryUnreadUI
+                || seedsDenseWorkspaceUI,
             seedsStoreScreenshotUI: arguments.contains("--debug-seed-store-ui")
                 || boolValue(environment["MIMI_DEBUG_SEED_STORE_UI"]),
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
             seedsMCPApprovalUI: seedsMCPApprovalUI,
             seedsHistoryUnreadUI: seedsHistoryUnreadUI,
+            seedsDenseWorkspaceUI: seedsDenseWorkspaceUI,
+            workspaceRowStyle: argumentValue(named: "--debug-workspace-row-style", in: arguments)
+                ?? environment["MIMI_DEBUG_WORKSPACE_ROW_STYLE"],
             hostPlatformPreview: hostPlatformPreview,
             endpoint: argumentValue(named: "--debug-endpoint", in: arguments)
                 ?? environment["MIMI_DEBUG_ENDPOINT"],

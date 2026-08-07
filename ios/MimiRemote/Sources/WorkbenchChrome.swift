@@ -84,6 +84,12 @@ enum WorkbenchNavigationEffect: Equatable {
     case selectSession(SessionID)
 }
 
+/// 先在副本中计算导航状态和副作用，再一起提交给 SwiftUI。
+struct WorkbenchNavigationCommit {
+    let state: WorkbenchNavigationState
+    let effect: WorkbenchNavigationEffect?
+}
+
 enum WorkbenchNavigationEvent: Equatable {
     case open(AppDestination, source: WorkbenchRootPage?)
     case synchronize(WorkbenchRestorationRoute)
@@ -622,9 +628,9 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
-        // iPad mini 竖屏虽然会退成单列导航，但 744/768pt 仍足以承载与横屏
-        // 收起侧栏后一致的会话表格；只有真正窄的分屏 / Slide Over 才回退 compact。
-        prefersSessionTableDensity = isPad && containerWidth >= 700
+        // 会话行只按可用宽度选密度，不按设备类型：iPhone 竖屏与 iPad 竖屏读的是同一批对象，
+        // 没有理由把项目锚点在手机上缩成 12pt。只有 Slide Over 这类真正窄的窗口才回退 compact。
+        prefersSessionTableDensity = containerWidth >= 360
     }
 }
 
@@ -1257,7 +1263,106 @@ enum WorkbenchPageLayout {
     static let maxContentWidth: CGFloat = 820
     static let regularPadding: CGFloat = 24
     static let compactPadding: CGFloat = 20
-    static let compactBottomPadding: CGFloat = 132
+    static let contentPanelPadding: CGFloat = 16
+    static let groupedPanelPadding: CGFloat = 14
+    static let controlPadding: CGFloat = 10
+    static let contentPanelCornerRadius: CGFloat = 22
+    static let groupedPanelCornerRadius: CGFloat = 16
+    static let controlCornerRadius: CGFloat = 12
+
+    // iOS 26 的浮动 Tab Bar 没有公开可读取的实时高度。这里统一维护其视觉高度，
+    // 再叠加设备 safe area 与 20pt 呼吸区，避免三个顶层页面各自猜一套底部留白。
+    static let compactTabBarVisualHeight: CGFloat = 64
+    static let compactTabBarBreathingRoom: CGFloat = 20
+    static let compactTabBarMinimumSafeArea: CGFloat = 20
+    static let defaultCompactBottomSafeAreaInset: CGFloat = 34
+    static var defaultCompactBottomChromeClearance: CGFloat {
+        compactBottomChromeClearance(
+            bottomSafeAreaInset: defaultCompactBottomSafeAreaInset
+        )
+    }
+    // 兼容不在紧凑 Tab 容器中的旧页面；顶层三页会使用实时 safe area 计算值。
+    static var compactBottomPadding: CGFloat {
+        defaultCompactBottomChromeClearance
+    }
+
+    static func compactBottomChromeClearance(bottomSafeAreaInset: CGFloat) -> CGFloat {
+        compactTabBarVisualHeight
+            + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
+            + compactTabBarBreathingRoom
+    }
+}
+
+private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {
+    static let defaultValue = WorkbenchPageLayout.defaultCompactBottomChromeClearance
+}
+
+private struct WorkbenchHasCompactTabBarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var workbenchBottomChromeClearance: CGFloat {
+        get { self[WorkbenchBottomChromeClearanceKey.self] }
+        set { self[WorkbenchBottomChromeClearanceKey.self] = newValue }
+    }
+
+    var workbenchHasCompactTabBar: Bool {
+        get { self[WorkbenchHasCompactTabBarKey.self] }
+        set { self[WorkbenchHasCompactTabBarKey.self] = newValue }
+    }
+}
+
+enum WorkbenchSurfaceRole {
+    case contentPanel
+    case groupedPanel
+    case control
+
+    var cornerRadius: CGFloat {
+        switch self {
+        case .contentPanel:
+            WorkbenchPageLayout.contentPanelCornerRadius
+        case .groupedPanel:
+            WorkbenchPageLayout.groupedPanelCornerRadius
+        case .control:
+            WorkbenchPageLayout.controlCornerRadius
+        }
+    }
+}
+
+private struct WorkbenchSurfaceModifier: ViewModifier {
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    let tokens: ThemeTokens
+    let role: WorkbenchSurfaceRole
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: role.cornerRadius, style: .continuous)
+
+        content
+            .background(background, in: shape)
+            .overlay {
+                shape.stroke(
+                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
+                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
+                )
+            }
+    }
+
+    private var background: Color {
+        switch role {
+        case .contentPanel, .groupedPanel:
+            tokens.contentPanelBackground
+        case .control:
+            tokens.surface.opacity(0.72)
+        }
+    }
+}
+
+extension View {
+    func workbenchSurface(tokens: ThemeTokens, role: WorkbenchSurfaceRole) -> some View {
+        modifier(WorkbenchSurfaceModifier(tokens: tokens, role: role))
+    }
 }
 
 struct StatusPill: View {

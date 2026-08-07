@@ -230,6 +230,12 @@ extension SessionStore {
             )
         ]
 
+        // TODO(工作区行样式评审): 只用于 A/B/C 三版对比截图，需要十行左右才能看出密度差别。
+        // 定稿后连同 --debug-seed-dense-workspace-ui 一起删除。
+        let seededSessions: [AgentSession] = appStore.shouldSeedDebugDenseWorkspaceUI
+            ? sessions + debugDenseWorkspaceSessions(workspace: mimiDemo, now: now)
+            : sessions
+
         isLoading = false
         setErrorMessage(nil)
         setStatusMessage(L10n.text("ui.debug_ui_sample_loaded"))
@@ -276,9 +282,9 @@ extension SessionStore {
         )
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
-        replaceSessionsIfChanged(with: sessions, projectID: nil)
+        replaceSessionsIfChanged(with: seededSessions, projectID: nil)
         if appStore.shouldSeedDebugHistoryUnreadUI,
-           var unreadCandidate = sessions.first(where: { $0.id == historySessionID }) {
+           var unreadCandidate = seededSessions.first(where: { $0.id == historySessionID }) {
             // 先让未选中的历史会话经历一次“运行中 → 新完成”，以复用生产判定链路。
             // 该参数只服务 iPhone/iPad 运行态验收，不污染普通 Debug 种子与快照。
             unreadCandidate.status = SessionStatus.running.rawValue
@@ -357,6 +363,43 @@ extension SessionStore {
             )
         ]
         rebuildProjectSessionListSnapshots()
+    }
+
+    /// TODO(工作区行样式评审): 定稿后删除。
+    /// 标题长度、分支长度和状态分布刻意贴近真机首屏，否则密度和截断问题看不出来。
+    func debugDenseWorkspaceSessions(workspace: AgentWorkspace, now: Date) -> [AgentSession] {
+        let fixtures: [(String, String, String, Int, String)] = [
+            (L10n.text("ui.waiting_to_confirm_deployment_permission"), "main", SessionStatus.waitingForApproval.rawValue, 2, L10n.text("ui.agent_is_waiting_for_you_to_approve_writing_launchd_configuration")),
+            (L10n.text("ui.these_two_should_be_the_same_issue_confirm_whether_they_share_the_same_root_cause"), "main", SessionStatus.completed.rawValue, 46, L10n.text("ui.both_paths_reach_the_same_relay_reconnection_damage_control_logic")),
+            (L10n.text("ui.investigate_mim82_claude_not_responding"), "codex/mim-81-mim-82-main-integration", SessionStatus.failed.rawValue, 47, L10n.text("ui.bridge_started_but_did_not_complete_the_handshake")),
+            (L10n.text("ui.review_pending_issue_status"), "codex/mim-109-performance-optimization", SessionStatus.completed.rawValue, 74, L10n.text("ui.six_items_are_in_progress_and_two_are_awaiting_verification")),
+            (L10n.text("ui.review_seedex_website_design"), "main", SessionStatus.completed.rawValue, 79, L10n.text("ui.the_first_screen_spacing_and_type_hierarchy_are_worth_borrowing_but_not_the_colors")),
+            (L10n.text("ui.confirm_whether_mim_99_has_been_merged"), "main", SessionStatus.completed.rawValue, 283, L10n.text("ui.it_has_been_merged_into_main_and_tagged")),
+            (L10n.text("ui.luna_multi_round_verification_and_full_project_regression"), "codex/mim-99-center-token-usage-card", SessionStatus.running.rawValue, 284, L10n.text("ui.running_the_third_round_after_the_first_two_passed")),
+            (L10n.text("ui.add_a_skeleton_screen_to_settings_token_loading"), "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 295, L10n.text("ui.the_initial_800ms_blank_period_is_no_longer_visible")),
+            (L10n.text("ui.review_mim_104_session_page_redesign_progress"), "codex/mim-99-center-token-usage-card", SessionStatus.completed.rawValue, 335, L10n.text("ui.hairline_dividers_and_date_buckets_are_in_place"))
+        ]
+
+        return fixtures.enumerated().map { index, fixture in
+            let (title, branch, status, minutesAgo, preview) = fixture
+            let updatedAt = now.addingTimeInterval(TimeInterval(-60 * minutesAgo))
+            return AgentSession(
+                id: "debug-dense-\(index)",
+                projectID: workspace.id,
+                project: workspace.name,
+                dir: workspace.path,
+                title: title,
+                status: status,
+                source: "debug",
+                runtimeProvider: "codex",
+                resumeID: "debug-dense-\(index)",
+                createdAt: updatedAt.addingTimeInterval(-60 * 30),
+                updatedAt: updatedAt,
+                preview: preview,
+                activeTurnID: status == SessionStatus.running.rawValue ? "debug-dense-turn-\(index)" : nil,
+                context: SessionContextSnapshot(git: SessionContextGitInfo(branch: branch))
+            )
+        }
     }
 
     func seedDebugConversationMessages(sessionID: SessionID, now: Date) {
