@@ -26,6 +26,20 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testClaudeConfigurationArgumentsKeepNormalAndRollbackCallsExplicit() {
+        XCTAssertEqual(
+            AgentCommandClient.claudeConfigurationArguments(preference: .automatic),
+            ["runtime", "--claude=auto", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.claudeConfigurationArguments(
+                preference: .disabled,
+                restoreEnabled: true
+            ),
+            ["runtime", "--claude=disabled", "--json", "--restore-enabled=true"]
+        )
+    }
+
     func testProcessCancellationIsReportedAsCancellation() async {
         let executor = ProcessExecutor()
         let task = Task {

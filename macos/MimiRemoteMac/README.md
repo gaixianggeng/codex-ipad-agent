@@ -68,6 +68,24 @@ bash scripts/build-macos-installer.sh \
 bash scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
 ```
 
+`--snapshot` 产物是 ad-hoc 签名的结构快照，只能验证 universal 二进制、DMG、
+LaunchAgent 和签名封装，不能拖入 Applications 做真实初始化或启动
+`SMAppService`。需要在本机验证首次打开、服务注册和 Claude 自动启动时，使用
+Keychain 中的 Apple Development 身份生成同团队签名包：
+
+```bash
+bash scripts/build-macos-installer.sh \
+  --development-signing \
+  --version 0.2.0 \
+  --build-number 2 \
+  --output-dir dist-macos-development
+bash scripts/check-macos-installer.sh \
+  --require-team-signing \
+  dist-macos-development/Mimi-Remote-Mac-Development.dmg
+```
+
+开发签名包只用于签名团队成员的本机验收，没有 Apple 公证，不得公开分发。
+
 正式构建必须提供 Developer ID PKCS#12 和 App Store Connect Notary API 凭据；脚本拒绝把 ad-hoc 快照作为正式包生成。
 
 ### 首次启动
@@ -81,7 +99,8 @@ bash scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
 
 - 正式 Mac App 使用与 `agentd` 同目录的随包 bridge，不要求用户单独安装 Rust 或运行 `cargo install`。
 - `agentd` 监督一个 resident bridge；每个 Claude thread 对应一个 Claude Code headless 进程。移动端重连使用稳定 session 和事件 cursor，不重复提交 `turn/start`。
-- Claude 仍需用户在 Mac 安装并登录 Claude Code，并显式设置 `claude.enabled=true`。保持 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS=false`。
+- App 启动时会检测随包 bridge、Claude CLI 和登录态；三项都可用且用户没有明确关闭时自动启用 Claude，否则保持关闭。用户可在设置页明确开启或关闭，明确关闭会在后续启动中保留。
+- 设置变更通过内嵌 `agentd` 原子更新私有配置并重新加载 App 管理的 LaunchAgent；重载失败会恢复原设置。始终保持 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS=false`，Claude 失败不影响 Codex 主通道。
 - 当前不支持 `goal`、`archive`、`fork`、APNs 后台 push 和跨设备云同步。完整边界见 [Claude bridge 架构](../../docs/claude-bridge-architecture.md)。
 
 ### 运行数据
