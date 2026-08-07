@@ -16,7 +16,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "claude"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [staleIdle], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -69,7 +69,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_active_guided"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -132,7 +132,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_queue_1"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -231,7 +231,7 @@ extension ConversationDataFlowTests {
             source: "claude",
             activeTurnID: "turn_existing"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
@@ -306,7 +306,7 @@ extension ConversationDataFlowTests {
             source: "claude",
             activeTurnID: "turn_existing"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
@@ -390,7 +390,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_before_restart"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("QueuedTurnRestartTests.\(UUID().uuidString)", isDirectory: true)
@@ -461,7 +461,14 @@ extension ConversationDataFlowTests {
             status: SessionStatus.completed.rawValue,
             source: running.source
         )
-        let appStore = AppStore()
+        let defaultsSuiteName = "ConversationTurnQueueTests.StartBarrier.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        defer { defaults.removePersistentDomain(forName: defaultsSuiteName) }
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
         appStore.token = "test-token"
         let queuedTurnStore = FileQueuedTurnStore(
             directoryURL: FileManager.default.temporaryDirectory
@@ -485,13 +492,18 @@ extension ConversationDataFlowTests {
         await firstStore.refreshAll(autoAttach: false)
         firstStore.takeOverSession(running)
         await firstStore.selectSession(running)
-        firstSockets[0].emitStatus(.connected)
+        // 控制连接由异步任务创建；先等待工厂产出 socket，避免测试调度较慢时数组越界崩溃。
+        for _ in 0..<80 where firstSockets.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let firstSocket = try XCTUnwrap(firstSockets.first, "控制连接未在超时前创建")
+        firstSocket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: firstStore)
         let firstQueued = await firstStore.sendTurn(CodexAppServerTurnPayload(prompt: "第一条实际派发"))
         let secondQueued = await firstStore.sendTurn(CodexAppServerTurnPayload(prompt: "第二条必须等待 started"))
         XCTAssertTrue(firstQueued)
         XCTAssertTrue(secondQueued)
-        firstSockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+        firstSocket.emitEvent(.turnCompleted(AgentEventMetadata(
             seq: 1,
             sessionID: running.id,
             turnID: "turn_before_barrier",
@@ -501,8 +513,9 @@ extension ConversationDataFlowTests {
             revision: nil,
             createdAt: nil
         )))
-        try await waitForSentTurnCount(1, socket: firstSockets[0])
-        firstSockets[0].onSendAccepted?(firstSockets[0].sentTurns[0].clientMessageID)
+        try await waitForSentTurnCount(1, socket: firstSocket)
+        let sentTurn = try XCTUnwrap(firstSocket.sentTurns.first)
+        firstSocket.onSendAccepted?(sentTurn.clientMessageID)
         try await Task.sleep(nanoseconds: 60_000_000)
         XCTAssertEqual(firstStore.selectedQueuedTurns.first?.waitsForAcceptedTurnStart, true)
         XCTAssertEqual(firstStore.selectedQueuedTurns.first?.blockedCompletionID, "turn_before_barrier")
@@ -584,7 +597,7 @@ extension ConversationDataFlowTests {
             status: SessionStatus.completed.rawValue,
             source: running.source
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("QueuedTurnRestartResumeTests.\(UUID().uuidString)", isDirectory: true)
@@ -657,7 +670,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_navigation_second"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [first, second], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -711,7 +724,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_queue_management"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -762,7 +775,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_snapshot_gap_1"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
@@ -860,7 +873,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_queue_reconnect"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -919,7 +932,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -962,7 +975,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -1001,7 +1014,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_ctrl_c"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -1055,7 +1068,7 @@ extension ConversationDataFlowTests {
     func testRunningSessionGuidedDeliveryUsesTurnStartedActiveTurn() async throws {
         let project = makeProject(id: "proj_ws_guided_event")
         let running = makeSession(id: "sess_ws_guided_event", projectID: project.id, title: "Running", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1101,7 +1114,7 @@ extension ConversationDataFlowTests {
     func testRunningSessionGuidedDeliveryBackfillsActiveTurnFromAssistantDelta() async throws {
         let project = makeProject(id: "proj_ws_guided_delta")
         let running = makeSession(id: "sess_ws_guided_delta", projectID: project.id, title: "Running", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1156,7 +1169,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_late"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1216,7 +1229,7 @@ extension ConversationDataFlowTests {
         // 已合并时间线后面（plan 在前、命令在后的事故路径），必须走状态级回放。
         let project = makeProject(id: "proj_takeover_replay")
         let running = makeSession(id: "sess_takeover_replay", projectID: project.id, title: "Running", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1248,7 +1261,7 @@ extension ConversationDataFlowTests {
         // loadHistoryIfNeeded 是 no-op，此时重连若要求完整回放，backlog 旧卡会破坏时间线顺序。
         let project = makeProject(id: "proj_foreground_replay")
         let running = makeSession(id: "sess_foreground_replay", projectID: project.id, title: "Running", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1290,7 +1303,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
@@ -1362,7 +1375,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -1407,7 +1420,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
         var sockets: [MockWebSocketClient] = []
@@ -1486,7 +1499,7 @@ extension ConversationDataFlowTests {
     func testRunningSessionSendWaitsForConnectedWebSocket() async throws {
         let project = makeProject(id: "proj_ws_connecting_guard")
         let running = makeSession(id: "sess_ws_connecting_guard", projectID: project.id, title: "连接中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1529,7 +1542,7 @@ extension ConversationDataFlowTests {
     func testWebSocketFailureMarksSendingUserMessagesFailedAndIgnoresStaleAccepted() async throws {
         let project = makeProject(id: "proj_ws_sending_failed")
         let running = makeSession(id: "sess_ws_sending_failed", projectID: project.id, title: "Sending Failed", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1586,7 +1599,7 @@ extension ConversationDataFlowTests {
     func testRunningSendFailureNoRolloutFoundMarksLocalEchoFailedAndRetainsRetryPayload() async throws {
         let project = makeProject(id: "proj_no_rollout_send")
         let running = makeSession(id: "sess_no_rollout_send", projectID: project.id, title: "No Rollout", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -1655,7 +1668,7 @@ extension ConversationDataFlowTests {
             updatedAt: Date(timeIntervalSince1970: 2),
             pendingApproval: approval
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [waiting])
         let conversationStore = ConversationStore()
@@ -1722,7 +1735,7 @@ extension ConversationDataFlowTests {
     func testApprovalRequestUpdatesSelectedSessionPendingApproval() async throws {
         let project = makeProject(id: "proj_approval_event")
         let running = makeSession(id: "sess_approval_event", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         let conversationStore = ConversationStore()
@@ -1809,7 +1822,7 @@ extension ConversationDataFlowTests {
             source: "claude",
             runtimeProvider: "claude"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let scheduler = FakeSessionReminderScheduler()
         var sockets: [MockWebSocketClient] = []
@@ -1873,7 +1886,7 @@ extension ConversationDataFlowTests {
     func testApprovalRequestSurvivesLateRunningStatusAndRefresh() async throws {
         let project = makeProject(id: "proj_approval_race")
         let running = makeSession(id: "sess_approval_race", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         let conversationStore = ConversationStore()
@@ -1942,7 +1955,7 @@ extension ConversationDataFlowTests {
     func testRuntimeEventsScheduleCompletionAndFailureNotifications() async throws {
         let project = makeProject(id: "proj_runtime_notice")
         let running = makeSession(id: "sess_runtime_notice", projectID: project.id, title: "长任务", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         let conversationStore = ConversationStore()
@@ -2142,7 +2155,7 @@ extension ConversationDataFlowTests {
         let sessionID = "thr_fixture_stream"
         let project = AgentProject(id: "proj_fixture_stream", name: "Fixture Stream", path: "/tmp/fixture-stream")
         let running = makeSession(id: sessionID, projectID: project.id, title: "Fixture 直连", status: "running", source: "codex", resumeID: sessionID)
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
@@ -2238,7 +2251,7 @@ extension ConversationDataFlowTests {
             updatedAt: Date(timeIntervalSince1970: 2),
             pendingApproval: approval
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)

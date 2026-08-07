@@ -22,7 +22,10 @@ extension ConversationDataFlowTests {
 
         let conversationStore = ConversationStore()
         let sessionStore = SessionStore(
-            appStore: AppStore(defaults: defaults),
+            appStore: AppStore(
+                defaults: defaults,
+                tokenStore: TokenStore(keychain: TestKeychainOperations())
+            ),
             conversationStore: conversationStore,
             logStore: LogStore()
         )

@@ -54,7 +54,7 @@ final class WorkspaceGitSummaryTests: XCTestCase {
             gitStatusResults: [project.path: .success(status)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -77,7 +77,7 @@ final class WorkspaceGitSummaryTests: XCTestCase {
     func testFullGitRefreshProjectsOnlyLightweightFieldsIntoCardCache() {
         let path = "/tmp/workspace-summary"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore()
         )
@@ -159,7 +159,7 @@ final class WorkspaceGitSummaryTests: XCTestCase {
             sessions: [session],
             gitStatusResults: [project.path: .success(refreshedStatus)]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),

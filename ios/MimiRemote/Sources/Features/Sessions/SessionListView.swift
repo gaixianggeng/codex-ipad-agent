@@ -430,6 +430,13 @@ struct SessionListView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        // 同一轮 body 求值内复用同一份轻量索引投影，避免每个 Section 的条件和内容
+        // 访问都重新触发全量 filter / merge / sort。生命周期输入仍由当前快照驱动。
+        let visibleSessions = self.visibleSessions
+        let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
+        let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
+        let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
+        let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
 
         List {
             if hasActiveFilters {
@@ -619,7 +626,7 @@ struct SessionListView: View {
         }
     }
 
-    private var sessionPartition: SessionListPartition {
+    private func makeSessionPartition(visibleSessions: [AgentSession]) -> SessionListPartition {
         let membership = lifecycleCoordinator.hasObservedInput
             ? lifecycleCoordinator.membership
             : SessionListMembership(sessions: visibleSessions)
@@ -636,7 +643,9 @@ struct SessionListView: View {
         )
     }
 
-    private var historyDateGroups: [SessionHistoryDateGroup] {
+    private func makeHistoryDateGroups(
+        sessionPartition: SessionListPartition
+    ) -> [SessionHistoryDateGroup] {
         SessionListPresentation.historyDateGroups(
             sessions: sessionPartition.history,
             now: Date(),
@@ -651,7 +660,7 @@ struct SessionListView: View {
         )
     }
 
-    private var lifecycleInput: SessionListLifecycleInput {
+    private func makeLifecycleInput(visibleSessions: [AgentSession]) -> SessionListLifecycleInput {
         SessionListLifecycleInput(
             membership: SessionListMembership(sessions: visibleSessions),
             // Haptic 不跟随搜索和筛选结果裁剪，否则切换筛选会把同一终态误当成新事件。
@@ -683,9 +692,9 @@ struct SessionListView: View {
         }
     }
 
-    private var presentationState: SessionListPresentationState {
+    private func makePresentationState(hasVisibleSessions: Bool) -> SessionListPresentationState {
         SessionListPresentationState.resolve(
-            hasVisibleSessions: !visibleSessions.isEmpty,
+            hasVisibleSessions: hasVisibleSessions,
             // sidebarProjects 只包含 rememberWorkspace 记录的已打开目录，不包含后端候选项目。
             hasOpenedWorkspace: !sessionStore.sidebarProjects.isEmpty,
             isLoading: sessionStore.isLoading,
@@ -905,7 +914,11 @@ struct SessionListView: View {
     }
 
     private var orderedVisibleSessions: [AgentSession] {
-        sessionPartition.active + sessionPartition.pinned + historyDateGroups.flatMap(\.sessions)
+        // 键盘事件发生在 body 求值之外，按当前筛选快照重新计算一次即可；正文渲染仍复用
+        // body 内的单份投影，避免每个 Section 重复过滤和排序。
+        let partition = makeSessionPartition(visibleSessions: visibleSessions)
+        let dateGroups = makeHistoryDateGroups(sessionPartition: partition)
+        return partition.active + partition.pinned + dateGroups.flatMap(\.sessions)
     }
 
     private func handleListKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {

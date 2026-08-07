@@ -1630,7 +1630,7 @@ extension ConversationDataFlowTests {
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
         let conversationStore = ConversationStore()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
