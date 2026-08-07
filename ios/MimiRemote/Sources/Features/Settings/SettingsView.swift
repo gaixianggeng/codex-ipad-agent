@@ -308,23 +308,20 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appearance")
 
-                SettingsChoiceRow(
-                    title: L10n.text("ui.language"),
-                    systemImage: "globe",
-                    options: AppLanguage.allCases,
-                    selection: appLanguageSelection
-                )
+                NavigationLink {
+                    LanguageSettingsView(
+                        appLanguageRawValue: $appLanguageRawValue,
+                        voiceInputProviderRawValue: $voiceInputProviderRawValue
+                    )
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.language"),
+                        value: languageSettingsSummary,
+                        systemImage: "globe"
+                    )
+                }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
-
-                SettingsChoiceRow(
-                    title: L10n.text("ui.voice_input"),
-                    systemImage: "waveform",
-                    options: VoiceInputProvider.availableProviders(),
-                    selection: voiceInputProviderSelection
-                )
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.voiceInput")
 
                 // 四个模式各自有 detail，而且是安全相关的选择：值得整页逐条读完再选。
                 SettingsChoiceRow(
@@ -516,6 +513,14 @@ struct SettingsView: View {
                 VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
             },
             set: { voiceInputProviderRawValue = $0.rawValue }
+        )
+    }
+
+    private var languageSettingsSummary: String {
+        L10n.format(
+            "ui.language_settings_summary",
+            appLanguageSelection.wrappedValue.displayName,
+            voiceInputProviderSelection.wrappedValue.title
         )
     }
 

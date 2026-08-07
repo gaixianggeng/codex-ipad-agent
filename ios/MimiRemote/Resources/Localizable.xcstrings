@@ -13404,6 +13404,23 @@
         }
       }
     },
+    "ui.language_settings_summary": {
+      "comment": "Short summary of the selected app language and voice input provider shown on the settings home page.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        }
+      }
+    },
     "ui.last_send_interrupted_before_confirmation": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState": "stale",

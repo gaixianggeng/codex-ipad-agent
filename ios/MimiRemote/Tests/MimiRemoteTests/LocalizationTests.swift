@@ -365,4 +365,21 @@ final class LocalizationTests: XCTestCase {
             "Uses Codex built-in voice capability · Transcribes after recording"
         )
     }
+
+    func testLanguageSettingsSummaryKeepsBothSelectionsVisible() {
+        XCTAssertEqual(
+            L10n.formatTemplate(
+                L10n.text("ui.language_settings_summary", language: .english),
+                arguments: ["System Default", "Codex"]
+            ),
+            "System Default · Codex"
+        )
+        XCTAssertEqual(
+            L10n.formatTemplate(
+                L10n.text("ui.language_settings_summary", language: .simplifiedChinese),
+                arguments: ["跟随系统", "设备端"]
+            ),
+            "跟随系统 · 设备端"
+        )
+    }
 }
