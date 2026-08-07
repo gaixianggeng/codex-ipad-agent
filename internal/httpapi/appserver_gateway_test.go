@@ -1412,15 +1412,28 @@ func TestAppServerGatewayCachesAccountTokenUsageAcrossConnections(t *testing.T) 
 		t.Fatalf("强制刷新应转发到 upstream 且剥离私有 params：%s", forcedUpstream)
 	}
 
-	// TTL 过期后恢复真实上游读取，确保缓存不会永久冻结展示数据。
+	// 12 小时以内仍由当前 Mac 的 agentd 统一返回缓存，多台设备不会各自重查上游。
 	router.accountTokenUsageMu.Lock()
-	router.accountTokenUsageCachedAt = time.Now().Add(-2 * time.Hour)
+	router.accountTokenUsageCachedAt = time.Now().Add(-defaultAccountTokenUsageCacheTTL + time.Minute)
 	router.accountTokenUsageMu.Unlock()
 	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":4,"method":"account/usage/read"}`)); err != nil {
 		t.Fatal(err)
 	}
+	withinTTLResponse := readGatewayRaw(t, second)
+	if !bytes.Contains(withinTTLResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("12 小时内应继续返回服务端缓存：%s", withinTTLResponse)
+	}
+	assertNoUpstreamFrame(t, received)
+
+	// 超过 12 小时后恢复真实上游读取，确保缓存不会永久冻结展示数据。
+	router.accountTokenUsageMu.Lock()
+	router.accountTokenUsageCachedAt = time.Now().Add(-defaultAccountTokenUsageCacheTTL - time.Minute)
+	router.accountTokenUsageMu.Unlock()
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":5,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
 	_ = readGatewayRaw(t, second)
-	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"id":4`)) {
+	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"id":5`)) {
 		t.Fatalf("过期请求应重新转发到 upstream：%s", got)
 	}
 }
