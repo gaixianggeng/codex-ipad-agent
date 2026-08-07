@@ -6,12 +6,13 @@ import (
 	"time"
 )
 
-const defaultAccountTokenUsageCacheTTL = time.Hour
+const defaultAccountTokenUsageCacheTTL = 12 * time.Hour
 
 const accountTokenUsageForceRefreshParam = "mimiForceRefresh"
 
-// cachedAccountTokenUsageResult 只返回 TTL 内的成功快照。缓存属于当前 agentd
-// 进程与 Codex runtime，不落盘、不跨宿主共享，也不会影响实时额度事件。
+// cachedAccountTokenUsageResult 只返回 TTL 内的成功快照。缓存属于当前 Mac 的
+// agentd 进程，同一服务端的所有客户端连接共享；它不落盘、不跨 Mac 共享，
+// 也不会影响实时额度事件。
 func (r *Router) cachedAccountTokenUsageResult(now time.Time) (json.RawMessage, bool) {
 	if r == nil {
 		return nil, false
