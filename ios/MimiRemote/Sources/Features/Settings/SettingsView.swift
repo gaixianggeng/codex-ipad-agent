@@ -9,7 +9,7 @@ enum SettingsLayoutMetrics {
     static let iconSlot: CGFloat = 28
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
-    static let statusModuleCornerRadius: CGFloat = 20
+    static let statusModuleCornerRadius = WorkbenchPageLayout.contentPanelCornerRadius
 }
 
 enum TokenCountFormatter {
@@ -81,6 +81,8 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -383,6 +385,12 @@ struct SettingsView: View {
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .listRowBackground(Color.clear)
         .themedSettingsForm(tokens: tokens)
+        // 紧凑 Tab 下允许内容经过玻璃栏，但最后一组必须能完整滚到栏上方。
+        .contentMargins(
+            .bottom,
+            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
+            for: .scrollContent
+        )
         .task(id: appStore.activeHostScope) {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {

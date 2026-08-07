@@ -49,7 +49,8 @@ struct UnifiedWorkbenchShell: View {
                 if layout.usesCompactNavigation {
                     compactLayout(
                         layout: layout,
-                        tokens: tokens
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else if layout.usesFloatingSidebarSurface {
                     floatingLayout(
@@ -211,11 +212,19 @@ struct UnifiedWorkbenchShell: View {
 
     private func compactLayout(
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
     ) -> some View {
-        TabView(selection: compactTabBinding(layout: layout)) {
+        let bottomChromeClearance = WorkbenchPageLayout.compactBottomChromeClearance(
+            bottomSafeAreaInset: bottomSafeAreaInset
+        )
+
+        return TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
-                sessionList(layout: layout)
+                sessionList(
+                    layout: layout,
+                    bottomContentMargin: bottomChromeClearance
+                )
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
@@ -259,6 +268,16 @@ struct UnifiedWorkbenchShell: View {
             for: .tabBar
         )
         .toolbarBackground(.visible, for: .tabBar)
+        .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
+        .environment(\.workbenchHasCompactTabBar, true)
+        .overlay(alignment: .bottom) {
+            WorkbenchTabBarScrollEdgeScrim(
+                tokens: tokens,
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
@@ -991,7 +1010,10 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func sessionList(layout: WorkbenchLayout) -> some View {
+    private func sessionList(
+        layout: WorkbenchLayout,
+        bottomContentMargin: CGFloat? = nil
+    ) -> some View {
         let manageConnections: (() -> Void)? = layout.usesCompactNavigation
             ? { openConnectionSettings(layout: layout) }
             : nil
@@ -1011,7 +1033,10 @@ struct UnifiedWorkbenchShell: View {
             prefersTableDensity: layout.prefersSessionTableDensity,
             // 只有侧栏在场时标题才是重复表达；单列导航没有侧栏，隐藏标题会让顶栏失去页面身份。
             hidesNavigationTitle: !layout.usesCompactNavigation,
-            bottomContentMargin: layout.usesCompactNavigation ? 84 : 16,
+            bottomContentMargin: bottomContentMargin
+                ?? (layout.usesCompactNavigation
+                    ? WorkbenchPageLayout.defaultCompactBottomChromeClearance
+                    : 16),
             newSessionPresentationNamespace: presentationNamespace
         )
     }

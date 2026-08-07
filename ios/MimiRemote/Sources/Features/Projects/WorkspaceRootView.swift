@@ -118,7 +118,8 @@ enum WorkspaceStripLayout {
     static let chipHeight: CGFloat = 44
     static let chipSpacing: CGFloat = 8
     /// 胶囊行 + 上下呼吸；工作区身份和状态改由下方状态行承担。
-    static let stripHeight: CGFloat = 60
+    /// 顶部只收紧上下留白，保留 44pt 胶囊命中区。
+    static let stripHeight: CGFloat = 56
     /// 头像在展开与收缩两种形态下保持同一光学尺寸，切换时只有胶囊在变宽。
     static let chipIconSize: CGFloat = 28
     /// 胶囊行、状态行与详情内容共用同一个最大宽度，宽屏下三者左右边界一致。
@@ -191,6 +192,27 @@ enum WorkspaceSessionAgeBoundary {
             !excludingSessionIDs.contains(session.id) &&
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
+    }
+}
+
+/// 会话页只在分支真正能帮助区分 worktree 时逐行展示它。
+///
+/// 同一页只有一个非空分支时，重复的分支元数据会挤压标题和预览；
+/// 出现多个分支时才保留每行的分支名，让它承担 worktree 区分作用。
+enum WorkspaceSessionBranchPresentation {
+    static func normalizedBranch(_ branch: String?) -> String? {
+        let value = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    static func shouldShowBranches(_ branches: [String?]) -> Bool {
+        Set(branches.compactMap(normalizedBranch)).count > 1
+    }
+
+    static func branchToDisplay(_ branch: String?, among branches: [String?]) -> String? {
+        guard shouldShowBranches(branches) else { return nil }
+        return normalizedBranch(branch)
     }
 }
 
@@ -518,7 +540,10 @@ struct WorkspaceRootView: View {
                 ForEach(sessionStore.sidebarProjects) { project in
                     // 状态行下沉进详情视图，与会话列表共用同一组内边距并紧贴列表：
                     // 它描述的是“这个列表属于哪个工作区”，悬在胶囊行下方会读成孤立的元数据。
-                    workspaceDetail(project: project) {
+                    workspaceDetail(
+                        project: project,
+                        showsStatusLine: sessionStore.isWorkspaceUnavailable(project.id)
+                    ) {
                         workspaceStatusLine(project: project, tokens: tokens)
                     }
                     .refreshable {
@@ -835,66 +860,29 @@ struct WorkspaceRootView: View {
         .padding(.vertical, 8)
     }
 
-    /// 胶囊收缩后，选中工作区的分支和 Git 状态集中在这一行。
-    /// 这些信息只描述当前选中项，因此固定在胶囊行下方，不随会话列表滚走。
+    /// 胶囊收缩后，工作区不可用状态仍集中在这一行，保留导航恢复线索。
+    /// 根工作区的 Git 摘要不在这里展示：它描述的是 project.path，不能代表各会话 worktree。
     private func workspaceStatusLine(project: AgentProject, tokens: ThemeTokens) -> some View {
-        let gitSummary = sessionStore.workspaceGitSummaryByPath[project.path]
-        let isGitSummaryLoading = sessionStore.refreshingWorkspaceGitSummaryPaths.contains(project.path)
-
-        return TimelineView(.periodic(from: .now, by: 60)) { _ in
-            // TimelineView 只负责按分钟触发刷新；时间来源可在视觉测试中固定。
-            let summary = WorkspaceStatusSummary.make(
-                gitSummary: gitSummary,
-                isUnavailable: sessionStore.isWorkspaceUnavailable(project.id)
-            )
-
-            // 分隔点只能出现在两个都存在的段之间。逐段自己带一个前导分隔符时，
-            // 缺少分支的非 Git 项目会以一个悬空的“·”开头。
-            let showsBranchSlot = summary.branch != nil || isGitSummaryLoading
-
-            HStack(spacing: 6) {
-                if let branch = summary.branch {
-                    Label(branch, systemImage: "point.3.connected.trianglepath.dotted")
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else if isGitSummaryLoading {
-                    Capsule()
-                        .fill(tokens.elevatedSurface.opacity(0.56))
-                        .frame(width: 58, height: 10)
-                }
-
-                if let status = summary.status {
-                    if showsBranchSlot {
-                        statusSeparator(tokens: tokens)
-                    }
-                    // 只有真正需要注意的状态（有改动、落后、需重试）才着色；
-                    // “已同步”这类稳态用三级文字，不再为每种状态都点一颗彩色圆点。
-                    Text(status.text)
-                        .foregroundStyle(status.needsAttention ? status.color(tokens: tokens) : tokens.tertiaryText)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-
-                Spacer(minLength: 0)
+        Group {
+            if sessionStore.isWorkspaceUnavailable(project.id) {
+                Label(L10n.text("ui.need_to_retry"), systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(tokens.warning)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .font(themeStore.uiFont(.caption))
-            .foregroundStyle(tokens.secondaryText)
-            // 状态行现在渲染在会话列表容器内部，那层已经有横向内边距了；
-            // 这里再加一次会比筛选行和会话行多缩进一截。
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("workspace.statusLine")
         }
-    }
-
-    private func statusSeparator(tokens: ThemeTokens) -> some View {
-        Text(verbatim: "·")
-            .foregroundStyle(tokens.tertiaryText)
-            .accessibilityHidden(true)
+        .font(themeStore.uiFont(.caption))
+        .foregroundStyle(tokens.secondaryText)
+        // 状态行现在渲染在会话列表容器内部，那层已经有横向内边距了；
+        // 这里再加一次会比筛选行和会话行多缩进一截。
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("workspace.statusLine")
     }
 
     private func workspaceDetail<StatusLine: View>(
         project: AgentProject,
+        showsStatusLine: Bool,
         @ViewBuilder statusLine: () -> StatusLine
     ) -> some View {
         let presentationKey = workspaceSessionPresentationKey(for: project)
@@ -911,6 +899,7 @@ struct WorkspaceRootView: View {
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
         return WorkspaceDetailView(
             statusLine: statusLine(),
+            showsStatusLine: showsStatusLine,
             // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
             // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
             recentSessions: WorkspaceSessionPresentation.visibleSessions(
@@ -1408,114 +1397,6 @@ private struct WorkspaceProjectChip: View {
     }
 }
 
-/// 选中工作区的分支与 Git 状态。原来分散在卡片的 metadataRow 里，
-/// 卡片收缩成胶囊后由页面顶部的一行状态摘要统一承担。
-private struct WorkspaceStatusSummary {
-    let branch: String?
-    let status: WorkspaceCardStatus?
-
-    /// 只描述工作区本身（分支 + Git 状态）。运行中交给「正在运行」分段标题，
-    /// 活跃时间交给每行右端的时间戳——写在这里会读成在描述整个列表。
-    static func make(
-        gitSummary: GitStatusResponse?,
-        isUnavailable: Bool
-    ) -> WorkspaceStatusSummary {
-        WorkspaceStatusSummary(
-            branch: branch(from: gitSummary),
-            status: status(gitSummary: gitSummary, isUnavailable: isUnavailable)
-        )
-    }
-
-    private static func branch(from gitSummary: GitStatusResponse?) -> String? {
-        let branch = gitSummary?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let branch, !branch.isEmpty {
-            return branch
-        }
-        let head = gitSummary?.head?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let head, !head.isEmpty {
-            return head
-        }
-        return nil
-    }
-
-    private static func status(
-        gitSummary: GitStatusResponse?,
-        isUnavailable: Bool
-    ) -> WorkspaceCardStatus? {
-        if isUnavailable {
-            return WorkspaceCardStatus(text: L10n.text("ui.need_to_retry"), tone: .danger)
-        }
-        guard let gitSummary else {
-            return nil
-        }
-        guard gitSummary.isRepository else {
-            return WorkspaceCardStatus(text: L10n.text("ui.not_a_git_repository"), tone: .secondary)
-        }
-        if !gitSummary.files.isEmpty {
-            return WorkspaceCardStatus(
-                text: L10n.format("ui.git_changes_count_value", gitSummary.files.count),
-                tone: .warning
-            )
-        }
-
-        let ahead = gitSummary.ahead ?? 0
-        let behind = gitSummary.behind ?? 0
-        if ahead > 0, behind > 0 {
-            return WorkspaceCardStatus(text: L10n.text("ui.git_branch_diverged"), tone: .warning)
-        }
-        if behind > 0 {
-            return WorkspaceCardStatus(text: L10n.format("ui.behind_value", behind), tone: .warning)
-        }
-        if ahead > 0 {
-            return WorkspaceCardStatus(text: L10n.format("ui.leading_value", ahead), tone: .accent)
-        }
-        if gitSummary.upstream?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return WorkspaceCardStatus(text: L10n.text("ui.git_synced"), tone: .success)
-        }
-        return WorkspaceCardStatus(text: L10n.text("ui.clean_work_area"), tone: .success)
-    }
-
-}
-
-private struct WorkspaceCardStatus {
-    enum Tone {
-        case accent
-        case success
-        case warning
-        case danger
-        case secondary
-    }
-
-    let text: String
-    let tone: Tone
-
-    /// 只有需要用户处理的状态才配着色；已同步、干净这类稳态不该在状态行里发光。
-    var needsAttention: Bool {
-        switch tone {
-        case .warning, .danger:
-            return true
-        case .accent, .success, .secondary:
-            return false
-        }
-    }
-
-    func color(tokens: ThemeTokens) -> Color {
-        switch tone {
-        case .accent:
-            // 运行和领先状态在主页只需可识别，不再与导航选中态争夺紫色焦点。
-            return tokens.secondaryText
-        case .success:
-            return tokens.success
-        case .warning:
-            return tokens.warning
-        case .danger:
-            return tokens.warning
-        case .secondary:
-            return tokens.tertiaryText
-        }
-    }
-}
-
 /// 泛型视图不能持有静态存储属性，而每行重建 DateFormatter 又很贵；
 /// 这两个格式化器与具体视图无关，提到文件级共享一份。
 /// 工作区最近会话行的几何。左槽不再放运行时品牌图标：这一屏已经被项目胶囊和
@@ -1597,18 +1478,9 @@ private enum WorkspaceSessionRailState {
 private struct WorkspaceSessionGroupPanel: ViewModifier {
     let tokens: ThemeTokens
 
-    private static let cornerRadius: CGFloat = 12
-
     func body(content: Content) -> some View {
         content
-            .background(
-                tokens.surface,
-                in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                    .stroke(tokens.border.opacity(0.22), lineWidth: 0.5)
-            }
+            .workbenchSurface(tokens: tokens, role: .groupedPanel)
     }
 }
 
@@ -1634,10 +1506,13 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
     @State private var isLoadingMoreSessions = false
 
     let statusLine: StatusLine
+    let showsStatusLine: Bool
     let recentSessions: [AgentSession]
     let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
@@ -1655,14 +1530,23 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 recentSessionsSection(tokens: tokens)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 20)
-            // 只有背景可以滚到玻璃 Tab Bar 后面；最后一条会话的文字必须能停在它上方。
-            // 浮动 Tab Bar 不参与安全区，这里按「Tab Bar 高度 + 24」自己让出位置。
-            .padding(.bottom, 120)
+            .padding(
+                .horizontal,
+                hasCompactTabBar
+                    ? WorkbenchPageLayout.compactPadding
+                    : WorkbenchPageLayout.regularPadding
+            )
+            .padding(.top, 16)
+            // 三个顶层页面消费同一个浮动栏 clearance；宽屏无 Tab Bar 时只保留常规页面留白。
+            .padding(
+                .bottom,
+                hasCompactTabBar
+                    ? bottomChromeClearance
+                    : WorkbenchPageLayout.regularPadding
+            )
             .frame(maxWidth: 920, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -1671,13 +1555,15 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     }
 
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             recentSessionsHeader(tokens: tokens)
 
             // 工作区状态紧贴第一条会话行，与列表共用左右内边距：
             // 它是这个列表的说明文字，夹在筛选行上方会重新读成悬空的元数据。
-            statusLine
-                .padding(.bottom, 2)
+            if showsStatusLine {
+                statusLine
+                    .padding(.bottom, 2)
+            }
 
             if sessionLoadState.isLoading, !hasInitialSessionContent {
                 // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
@@ -1691,11 +1577,11 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                     Button(L10n.text("ui.reload"), action: onRefreshSessions)
                 }
                 .frame(maxWidth: .infinity, minHeight: 150)
-                .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .workbenchSurface(tokens: tokens, role: .groupedPanel)
             } else if recentSessions.isEmpty {
                 ContentUnavailableView(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right", description: Text(L10n.text("ui.after_a_new_session_is_created_in_this")))
                     .frame(maxWidth: .infinity, minHeight: 150)
-                    .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .workbenchSurface(tokens: tokens, role: .groupedPanel)
             } else {
                 groupedSessionSections(tokens: tokens)
             }
@@ -1710,6 +1596,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         let grouped = Dictionary(grouping: recentSessions) { session in
             WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
         }
+        let branchValues = recentSessions.map(\.gitBranchName)
 
         VStack(alignment: .leading, spacing: 18) {
             ForEach(WorkspaceSessionGroup.allCases, id: \.self) { group in
@@ -1717,7 +1604,12 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 if !sessions.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader(group, count: sessions.count, tokens: tokens)
-                        sessionGroupBody(group, sessions: sessions, tokens: tokens)
+                        sessionGroupBody(
+                            group,
+                            sessions: sessions,
+                            branchValues: branchValues,
+                            tokens: tokens
+                        )
                     }
                 }
             }
@@ -1753,6 +1645,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
+        branchValues: [String?],
         tokens: ThemeTokens
     ) -> some View {
         let firstStaleIndex = group == .recent
@@ -1776,7 +1669,11 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 Button {
                     onOpenSession(session)
                 } label: {
-                    recentSessionRow(session, tokens: tokens)
+                    recentSessionRow(
+                        session,
+                        branchValues: branchValues,
+                        tokens: tokens
+                    )
                 }
                 .buttonStyle(.plain)
                 .sessionRowActions(session)
@@ -1922,7 +1819,11 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
 
-    private func recentSessionRow(_ session: AgentSession, tokens: ThemeTokens) -> some View {
+    private func recentSessionRow(
+        _ session: AgentSession,
+        branchValues: [String?],
+        tokens: ThemeTokens
+    ) -> some View {
         let status = session.displayStatus(foregroundActivity: nil)
         let statusTone = recentSessionStatusColor(for: status.tone, tokens: tokens)
 
@@ -1962,11 +1863,14 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                         .truncationMode(.tail)
                 }
 
-                // 元数据行：分支贴左，状态 / 时间 / 未读贴右。状态固定在右下角，
-                // 标题行因此能占满整行——之前时间戳挤在标题右边，长标题一律被截断。
+                // 元数据行：只有存在多个 worktree 分支时才把分支贴左，状态 / 时间 / 未读贴右。
+                // 单一分支时隐藏重复值，让标题和预览占满整行；时间戳不会挤在标题右边。
                 // 左端已有状态圆点，这里不再挂小菊花：圆点 + Spinner + 状态文字三样说同一件事。
                 HStack(spacing: 8) {
-                    if let branch = session.gitBranchName {
+                    if let branch = WorkspaceSessionBranchPresentation.branchToDisplay(
+                        session.gitBranchName,
+                        among: branchValues
+                    ) {
                         HStack(spacing: 4) {
                             SessionBranchIcon(size: 10)
                                 .foregroundStyle(tokens.tertiaryText)

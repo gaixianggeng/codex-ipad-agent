@@ -80,18 +80,26 @@ struct WorkspaceRuntimePicker: View {
                             .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(isSelected ? tokens.primaryAction : tokens.tertiaryText)
-                    // 未选中项只是文字，不带任何容器；选中项也只靠字重和颜色区分。
-                    // 运行时的切换频率远低于切工作区，不该在顶部占一个胶囊的重量。
-                    .saturation(isSelected ? 1 : 0)
-                    .opacity(isSelected ? 1 : 0.72)
+                    // 三态同时使用层级、字重和透明度：灰度或 Increase Contrast 下，
+                    // 选中项仍靠 semibold，未选中可用项仍是可操作的 secondary，而非 disabled。
+                    .foregroundStyle(
+                        isSelected
+                            ? tokens.primaryAction
+                            : (isAvailable ? tokens.secondaryText : tokens.tertiaryText)
+                    )
+                    .opacity(
+                        isSelected
+                            ? 1
+                            : (isAvailable ? 0.60 : 0.42)
+                    )
+                    // 未选中项只是文字，不带任何容器；运行时的切换频率远低于切工作区，
+                    // 不该在顶部占一个胶囊的重量。
                     .padding(.horizontal, 8)
                     .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!isAvailable)
-                .opacity(isAvailable ? 1 : 0.42)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityHint(

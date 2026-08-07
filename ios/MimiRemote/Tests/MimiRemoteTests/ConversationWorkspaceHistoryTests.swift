@@ -2028,6 +2028,42 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceSessionBranchPresentationHidesNilBlankAndSingleBranchValues() {
+        XCTAssertNil(WorkspaceSessionBranchPresentation.normalizedBranch(nil))
+        XCTAssertNil(WorkspaceSessionBranchPresentation.normalizedBranch(" \n\t"))
+        XCTAssertEqual(
+            WorkspaceSessionBranchPresentation.normalizedBranch("  main\n"),
+            "main"
+        )
+
+        let branches: [String?] = [nil, " ", "main", " main\n"]
+        XCTAssertFalse(
+            WorkspaceSessionBranchPresentation.shouldShowBranches(branches),
+            "空白和同一分支不应制造分支差异"
+        )
+        XCTAssertNil(
+            WorkspaceSessionBranchPresentation.branchToDisplay("main", among: branches)
+        )
+    }
+
+    func testWorkspaceSessionBranchPresentationShowsEachNonEmptyBranchWhenWorktreesDiffer() {
+        let branches: [String?] = ["main", " feature/login ", nil]
+
+        XCTAssertTrue(WorkspaceSessionBranchPresentation.shouldShowBranches(branches))
+        XCTAssertEqual(
+            WorkspaceSessionBranchPresentation.branchToDisplay(" main ", among: branches),
+            "main"
+        )
+        XCTAssertEqual(
+            WorkspaceSessionBranchPresentation.branchToDisplay(" feature/login ", among: branches),
+            "feature/login"
+        )
+        XCTAssertNil(
+            WorkspaceSessionBranchPresentation.branchToDisplay(nil, among: branches),
+            "没有分支的行仍不应渲染空标签"
+        )
+    }
+
     func testStartNewSessionWithClaudeRuntimeCarriesRuntimeProviderInCreatePayload() async throws {
         let project = makeProject(id: "proj_claude_entry")
         let created = makeSession(id: "claude_created", projectID: project.id, title: "Claude 会话", status: "closed", source: "claude")
