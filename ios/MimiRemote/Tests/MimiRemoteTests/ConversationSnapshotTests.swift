@@ -141,6 +141,38 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 1024, height: 768)
     }
 
+    private func makeEmptyConversation(
+        workspacePath: String,
+        colorScheme: ColorScheme,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        let project = AgentProject(
+            id: "snapshot-empty-workspace",
+            name: URL(fileURLWithPath: workspacePath).lastPathComponent,
+            path: workspacePath
+        )
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.projects = [project]
+        sessionStore.sidebarProjects = [project]
+        sessionStore.selectedProjectID = project.id
+
+        return ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, colorScheme)
+            .environment(\.horizontalSizeClass, width < 560 ? .compact : .regular)
+            .frame(width: width, height: height)
+    }
+
     private func makeRichMarkdownConversation() -> some View {
         let sessionID = "snapshot_markdown_session"
         let appStore = makeSnapshotAppStore()
@@ -399,6 +431,79 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .environmentObject(themeStore)
             .environment(\.colorScheme, .light)
             .frame(width: 1024, height: 900)
+    }
+
+    private func makeSingleImageMessage(
+        containerWidth: CGFloat,
+        imageSize: CGSize,
+        accent: UIColor,
+        usesRemoteURL: Bool = false
+    ) async -> some View {
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let imageURL = usesRemoteURL
+            ? "https://example.com/snapshot-\(Int(imageSize.width))x\(Int(imageSize.height)).png"
+            : snapshotImageDataURL(size: imageSize, accent: accent)
+        let imageSource = ConversationImageSource.markdown(imageURL)
+        // 生产视图会异步解码图片；快照预热对应来源的缓存，确保只比较完成态布局。
+        if usesRemoteURL {
+            RemoteURLImageLoader.storeImageForTesting(
+                snapshotImage(size: imageSize, accent: accent),
+                cacheKey: imageSource.id,
+                profileID: appStore.notificationRoutingProfileID,
+                maxPixelSize: 1_600
+            )
+        } else {
+            _ = await DataURLImageDecoder.image(
+                from: imageURL,
+                cacheKey: imageSource.id,
+                profileID: appStore.notificationRoutingProfileID,
+                maxPixelSize: 1_600
+            )
+        }
+
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let message = ConversationMessage(
+            stableID: "snapshot-single-image-\(Int(containerWidth))-\(Int(imageSize.width))x\(Int(imageSize.height))",
+            role: .user,
+            content: "[图片]",
+            createdAt: snapshotMessageDate,
+            sendStatus: .confirmed,
+            turnPayload: CodexAppServerTurnPayload(input: [.image(url: imageURL)])
+        )
+        let horizontalSizeClass: UserInterfaceSizeClass = containerWidth < 560 ? .compact : .regular
+        let layout = ConversationLayout(
+            containerWidth: containerWidth,
+            horizontalSizeClass: horizontalSizeClass
+        )
+
+        return VStack(spacing: 0) {
+            MessageRow(
+                message: message,
+                themeVersion: themeStore.themeVersion,
+                layout: layout,
+                showsActiveDeliveryStatus: false,
+                showsCrossSessionOrigin: false,
+                skills: [],
+                retry: { _ in },
+                stop: {},
+                previewFile: { URL(fileURLWithPath: $0) }
+            )
+            .padding(layout.messageRowInsets)
+
+            Spacer(minLength: 0)
+        }
+        .environmentObject(sessionStore)
+        .environmentObject(conversationStore)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .background(themeStore.tokens(for: .light).background)
+        .frame(width: containerWidth, height: 390)
     }
 
     private func makeUnavailableUserImageGallery() -> some View {
@@ -752,6 +857,38 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testEmptyConversationShowsCurrentDirectoryAcrossAppearances() {
+        assertSnapshot(
+            of: makeEmptyConversation(
+                workspacePath: "/Users/demo/Projects/Clients/2026/Mimi Remote/codex-ipad-agent",
+                colorScheme: .light,
+                width: 390,
+                height: 700
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 390, height: 700),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-long-path-light"
+        )
+
+        assertSnapshot(
+            of: makeEmptyConversation(
+                workspacePath: "/Users/demo/code/codex-ipad-agent",
+                colorScheme: .dark,
+                width: 1024,
+                height: 768
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 1024, height: 768),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-dark"
+        )
+    }
+
     func testRichMarkdownConversationRendering() {
         assertSnapshot(
             of: makeRichMarkdownConversation(),
@@ -784,6 +921,60 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 1024, height: 900)
                 )
             )
+        )
+    }
+
+    func testSingleImageMediaCardAlignmentAcrossLayouts() async {
+        for (name, width) in [
+            ("iphone-390", CGFloat(390)),
+            ("ipad-narrow-700", CGFloat(700)),
+            ("ipad-wide-1024", CGFloat(1024))
+        ] {
+            let view = await makeSingleImageMessage(
+                containerWidth: width,
+                imageSize: CGSize(width: 240, height: 360),
+                accent: .systemOrange
+            )
+            assertSnapshot(
+                of: view,
+                as: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: width, height: 390),
+                    traits: UITraitCollection(displayScale: 2)
+                ),
+                named: name
+            )
+        }
+
+        let landscapeView = await makeSingleImageMessage(
+            containerWidth: 700,
+            imageSize: CGSize(width: 420, height: 210),
+            accent: .systemPurple
+        )
+        assertSnapshot(
+            of: landscapeView,
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 700, height: 390),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-narrow-landscape"
+        )
+
+        let remoteView = await makeSingleImageMessage(
+            containerWidth: 390,
+            imageSize: CGSize(width: 240, height: 360),
+            accent: .systemTeal,
+            usesRemoteURL: true
+        )
+        assertSnapshot(
+            of: remoteView,
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 390, height: 390),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-390-remote-url"
         )
     }
 
@@ -982,6 +1173,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testComposerSurfaceIPadMiniIncreasedContrast() async {
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 744,
+            height: 1133,
+            usesCompactIPadDefault: true
+        )
+
+        assertSnapshot(
+            of: view,
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 1133),
+                    traits: UITraitCollection(accessibilityContrast: .high)
+                )
+            )
+        )
+    }
+
     func testComposerStatusTrayIPadMiniLandscapeDetailWidth() async {
         // 横屏回归：1133pt 整窗减去约 300pt 侧栏后，detail 列约 832pt。
         // Composer 按内容测量宽度必须用标准指标（快捷行、按钮文字标签都在），
@@ -1052,6 +1263,55 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 320, height: 700)
                 )
             )
+        )
+    }
+
+    func testComposerStatusTrayCollapsedBlockedObserveDark() {
+        let themeStore = makeThemeStore()
+        let goal = ThreadGoal(
+            threadID: "thread-collapsed-blocked",
+            objective: "等待用户补充权限后继续执行。",
+            status: .blocked,
+            tokenBudget: 2_000_000,
+            tokensUsed: 640_000,
+            timeUsedSeconds: 820,
+            createdAt: snapshotMessageDate,
+            updatedAt: snapshotMessageDate
+        )
+        let tray = ComposerStatusTray(
+            sessionControlNotice: "当前由 Mac 端控制，仅观察。",
+            quotaNotice: nil,
+            usage: nil,
+            goal: goal,
+            isGoalExpanded: false,
+            isGoalUpdating: false,
+            // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
+            goalErrorMessage: "缺少所需权限，等待用户处理后重试。",
+            isRefreshDisabled: false,
+            allowsTakeOver: true,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+
+        let view = VStack {
+            Spacer()
+            tray
+                .padding(16)
+        }
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .background(themeStore.tokens(for: .dark).background)
+        .frame(width: 390, height: 110)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 110))
         )
     }
 
@@ -1132,6 +1392,20 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
         XCTAssertEqual(collapsed.borderOpacity, 0.58)
         XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
+    }
+
+    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .light,
+                reduceTransparency: false
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.05)
+        }
     }
 
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
@@ -1418,7 +1692,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 reminder: nil,
                 isObserving: false,
                 isExternalReadOnly: false,
-                style: .library
+                density: .compact
             )
             SessionIndexRow(
                 session: claude,
@@ -1429,7 +1703,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 reminder: nil,
                 isObserving: false,
                 isExternalReadOnly: false,
-                style: .library
+                density: .compact
             )
         }
         .padding(16)
@@ -1444,9 +1718,168 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testSessionMetadataPrefersWorkingDirectoryOverProjectName() {
+        let project = AgentProject(
+            id: "shared-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/worktrees/codex-ipad-agent/mim-96"
+        )
+        let session = makeSnapshotSession(
+            id: "worktree-session",
+            project: project,
+            title: "验证 worktree 目录",
+            status: "history",
+            preview: ""
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.metadataDirectoryText(for: session),
+            "/Users/me/worktrees/codex-ipad-agent/mim-96"
+        )
+    }
+
+    func testSessionRuntimeMetadataInDarkConversationList() {
+        let project = AgentProject(
+            id: "runtime-dark",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let themeStore = makeThemeStore()
+        let codex = makeSnapshotSession(
+            id: "runtime-dark-codex",
+            project: project,
+            title: "Review MIM-96 会话列表细节",
+            status: "completed",
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "codex/mim-96-refine-session-ui")
+            )
+        )
+        let claude = makeSnapshotSession(
+            id: "runtime-dark-claude",
+            project: project,
+            title: "检查深色模式下的目录对齐",
+            status: "history",
+            preview: "Claude Code 会话",
+            runtimeProvider: "claude"
+        )
+
+        let view = VStack(spacing: 8) {
+            SessionIndexRow(
+                session: codex,
+                foregroundActivity: nil,
+                isSelected: true,
+                isPinned: true,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                isExternalReadOnly: false,
+                isUnread: true,
+                density: .compact
+            )
+            SessionIndexRow(
+                session: claude,
+                foregroundActivity: nil,
+                isSelected: false,
+                isPinned: false,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                isExternalReadOnly: false,
+                density: .compact
+            )
+        }
+        .padding(16)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .background(themeStore.tokens(for: .dark).background)
+        .frame(width: 460, height: 190)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
+        )
+    }
+
+    func testSessionLibraryDensityAndAccessibilityLayouts() {
+        let scenarios: [(
+            name: String,
+            width: CGFloat,
+            height: CGFloat,
+            colorScheme: ColorScheme,
+            prefersTable: Bool,
+            hidesNavigationTitle: Bool,
+            bottomContentMargin: CGFloat,
+            dynamicTypeSize: DynamicTypeSize,
+            increasedContrast: Bool
+        )] = [
+            ("iphone-390-light", 390, 844, .light, false, false, 84, .large, false),
+            ("ipad-mini-744-light", 744, 980, .light, true, true, 84, .large, false),
+            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, true, 16, .large, true),
+            ("split-375-light", 375, 812, .light, false, false, 84, .large, false),
+            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, true, 16, .accessibility3, false),
+        ]
+
+        for scenario in scenarios {
+            let view = makeSessionLibrarySnapshot(
+                width: scenario.width,
+                height: scenario.height,
+                colorScheme: scenario.colorScheme,
+                prefersTable: scenario.prefersTable,
+                hidesNavigationTitle: scenario.hidesNavigationTitle,
+                bottomContentMargin: scenario.bottomContentMargin,
+                dynamicTypeSize: scenario.dynamicTypeSize
+            )
+
+            assertSnapshot(
+                of: view,
+                as: .wait(
+                    for: 0.3,
+                    on: .image(
+                        precision: 0.98,
+                        layout: .fixed(width: scenario.width, height: scenario.height),
+                        traits: UITraitCollection(
+                            accessibilityContrast: scenario.increasedContrast ? .high : .normal
+                        )
+                    )
+                ),
+                named: scenario.name
+            )
+        }
+    }
+
     func testUnifiedWorkbenchSidebarNavigationChrome() {
         let themeStore = makeThemeStore()
         let tokens = themeStore.tokens(for: .light)
+        let project = AgentProject(
+            id: "sidebar-monitor-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let needYou = makeSnapshotSession(
+            id: "sidebar-needs-you",
+            project: project,
+            title: "确认 MIM-104 交互细节",
+            status: SessionStatus.waitingForInput.rawValue,
+            preview: ""
+        )
+        let running = makeSnapshotSession(
+            id: "sidebar-running",
+            project: project,
+            title: "重新录制五档视觉快照",
+            status: SessionStatus.running.rawValue,
+            preview: "",
+            activeTurnID: "sidebar-turn",
+            updatedAt: Date().addingTimeInterval(-12 * 60)
+        )
+        let completed = makeSnapshotSession(
+            id: "sidebar-completed",
+            project: project,
+            title: "整理最新设计补充",
+            status: SessionStatus.completed.rawValue,
+            preview: "",
+            recencyAt: Date().addingTimeInterval(-3 * 60)
+        )
 
         let view = VStack(spacing: 0) {
             List {
@@ -1467,14 +1900,52 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     )
                 }
 
-                Section("最近") {
-                    Text("优化侧栏创建入口")
-                        .font(themeStore.uiFont(.subheadline, weight: .medium))
-                        .listRowBackground(Color.clear)
+                Section("需要你 1") {
+                    SessionSidebarMonitorRow(
+                        session: needYou,
+                        kind: .needYou,
+                        isSelected: false,
+                        isRecentlyCompleted: false,
+                        projectIcon: .emoji("🐱"),
+                        runtimeActivitySnapshot: nil
+                    )
+                    .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowBackground(Color.clear)
+                }
+
+                Section("进行中 1") {
+                    SessionSidebarMonitorRow(
+                        session: running,
+                        kind: .running,
+                        isSelected: true,
+                        isRecentlyCompleted: false,
+                        projectIcon: nil,
+                        runtimeActivitySnapshot: RuntimeActivitySnapshot(
+                            turnStartedAt: Date().addingTimeInterval(-12 * 60),
+                            lastActivityAt: Date()
+                        )
+                    )
+                    .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowBackground(Color.clear)
+                }
+
+                Section("刚完成 1") {
+                    SessionSidebarMonitorRow(
+                        session: completed,
+                        kind: .justCompleted,
+                        isSelected: false,
+                        isRecentlyCompleted: true,
+                        projectIcon: nil,
+                        runtimeActivitySnapshot: nil
+                    )
+                    .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowBackground(Color.clear)
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            .contentMargins(.leading, 0, for: .scrollContent)
+            .environment(\.defaultMinListRowHeight, 34)
             .frame(maxHeight: .infinity)
 
             // 直接渲染生产组件，避免 NavigationSplitView 在测试宿主中自动折叠侧栏。
@@ -1556,9 +2027,185 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         return ThemeStore(defaults: defaults)
     }
 
+    /// 用真实 SessionListView 锁住扁平日期列表、项目锚点、三档密度与辅助功能回退。
+    private func makeSessionLibrarySnapshot(
+        width: CGFloat,
+        height: CGFloat,
+        colorScheme: ColorScheme,
+        prefersTable: Bool,
+        hidesNavigationTitle: Bool,
+        bottomContentMargin: CGFloat,
+        dynamicTypeSize: DynamicTypeSize
+    ) -> some View {
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let appearanceDefaults = UserDefaults(
+            suiteName: "ConversationSnapshotTests.WorkspaceAppearance.\(UUID().uuidString)"
+        )!
+        let workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: appearanceDefaults)
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let project = AgentProject(
+            id: "session-list-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/worktrees/codex-ipad-agent/mim-104"
+        )
+        let secondProject = AgentProject(
+            id: "session-list-second-project",
+            name: "poster-studio",
+            path: "/Users/me/code/xhs-poster-studio"
+        )
+
+        func localDate(dayOffset: Int, hour: Int, minute: Int) -> Date {
+            let day = calendar.date(byAdding: .day, value: dayOffset, to: today) ?? today
+            return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+        }
+
+        workspaceAppearanceStore.setCustomEmoji(
+            "🐱",
+            profileID: appStore.activeHostScope.profileID,
+            projectID: project.id
+        )
+        workspaceAppearanceStore.setCustomEmoji(
+            "🎨",
+            profileID: appStore.activeHostScope.profileID,
+            projectID: secondProject.id
+        )
+        workspaceAppearanceStore.setStyle(
+            .emoji,
+            profileID: appStore.activeHostScope.profileID
+        )
+
+        let active = makeSnapshotSession(
+            id: "session-list-active",
+            project: project,
+            title: "正在整理 **MIM-104** 会话列表",
+            status: SessionStatus.running.rawValue,
+            preview: "同步核对侧边栏状态和扁平列表",
+            activeTurnID: "turn-active",
+            recencyAt: localDate(dayOffset: 0, hour: 10, minute: 18)
+        )
+        let pinned = makeSnapshotSession(
+            id: "session-list-pinned",
+            project: project,
+            title: "固定在顶部的发布检查",
+            status: SessionStatus.history.rawValue,
+            preview: "检查真机安装与回归结果",
+            runtimeProvider: "claude"
+        )
+        let historyRows: [AgentSession] = [
+            makeSnapshotSession(
+                id: "session-list-today-1",
+                project: project,
+                title: "## 宽屏列对齐\n并压平标题换行",
+                status: SessionStatus.history.rawValue,
+                preview: "预览紧跟标题，右侧只保留紧凑元数据",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 55)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-2",
+                project: project,
+                title: "恢复侧边栏最近会话",
+                status: SessionStatus.completed.rawValue,
+                preview: "按需要你、进行中、刚完成、置顶和最近分层",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 42)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-3",
+                project: project,
+                title: "检查 project anchor 连续显示",
+                status: SessionStatus.history.rawValue,
+                preview: "同一项目后续行保留空槽，不重复 Emoji",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 30)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-4",
+                project: project,
+                title: "清理 Markdown 与换行",
+                status: SessionStatus.history.rawValue,
+                preview: "**标题** 和预览都保持单行可扫读",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 18)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-5",
+                project: project,
+                title: "验证发丝分隔线",
+                status: SessionStatus.history.rawValue,
+                preview: "分隔线从标题区域开始，组末不再绘制",
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 6)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-other-project",
+                project: secondProject,
+                title: "生成小红书视觉素材",
+                status: SessionStatus.history.rawValue,
+                preview: "项目切换时立即出现新的图标锚点",
+                runtimeProvider: "claude",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 54)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-7",
+                project: project,
+                title: "检查 compact 顶栏与安全区",
+                status: SessionStatus.failed.rawValue,
+                preview: "窄屏回退两行布局，不使用固定列宽",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 42)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-8",
+                project: project,
+                title: "保留 Inspector 完整路径",
+                status: SessionStatus.history.rawValue,
+                preview: "主列表只显示项目名称，详情仍有完整目录",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 30)
+            ),
+            makeSnapshotSession(
+                id: "session-list-today-9",
+                project: project,
+                title: "完成 MIM-104 快照验收",
+                status: SessionStatus.history.rawValue,
+                preview: "使用 90% 同项目的实机数据分布验证密度",
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 18)
+            ),
+        ]
+
+        sessionStore.projects = [project, secondProject]
+        sessionStore.sidebarProjects = [project, secondProject]
+        sessionStore.sessions = [active, pinned] + historyRows
+        sessionStore.pinnedSessionIDs = [pinned.id]
+        sessionStore.setUnreadHistorySessionIDs([historyRows[1].id, historyRows[5].id])
+        sessionStore.selectedSessionID = historyRows[0].id
+
+        return NavigationStack {
+            SessionListView(
+                manageConnections: {},
+                prefersTableDensity: prefersTable,
+                hidesNavigationTitle: hidesNavigationTitle,
+                bottomContentMargin: bottomContentMargin
+            )
+        }
+        .environmentObject(appStore)
+        .environmentObject(sessionStore)
+        .environmentObject(themeStore)
+        .environmentObject(workspaceAppearanceStore)
+        .environment(\.colorScheme, colorScheme)
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .frame(width: width, height: height)
+    }
+
     private func snapshotImageDataURL(size: CGSize, accent: UIColor) -> String {
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { context in
+        let data = snapshotImage(size: size, accent: accent).pngData() ?? Data()
+        return "data:image/png;base64,\(data.base64EncodedString())"
+    }
+
+    private func snapshotImage(size: CGSize, accent: UIColor) -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { context in
             UIColor.systemBackground.setFill()
             context.fill(CGRect(origin: .zero, size: size))
             accent.withAlphaComponent(0.16).setFill()
@@ -1567,8 +2214,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             context.cgContext.setLineWidth(6)
             context.cgContext.stroke(CGRect(x: 24, y: 24, width: size.width - 48, height: size.height - 48))
         }
-        let data = image.pngData() ?? Data()
-        return "data:image/png;base64,\(data.base64EncodedString())"
     }
 
     /// 快照不能读取模拟器里真实配对过的 Mac；隔离偏好与 Keychain 后，composer 的默认状态才可复现。
@@ -1608,7 +2253,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         pendingApproval: ApprovalSummary? = nil,
         goal: ThreadGoal? = nil,
         runtimeProvider: String? = nil,
-        context: SessionContextSnapshot? = nil
+        context: SessionContextSnapshot? = nil,
+        createdAt: Date? = nil,
+        updatedAt: Date? = nil,
+        recencyAt: Date? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -1620,8 +2268,9 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             source: "codex",
             runtimeProvider: runtimeProvider,
             resumeID: "thread-\(id)",
-            createdAt: nil,
-            updatedAt: nil,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            recencyAt: recencyAt,
             preview: preview,
             activeTurnID: activeTurnID,
             lastSeq: 42,

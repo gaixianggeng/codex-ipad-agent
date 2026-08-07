@@ -2,6 +2,22 @@ name: iOS CI
 
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        description: "要验证的 immutable commit；为空时使用触发事件 SHA"
+        required: false
+        default: ""
+        type: string
+      publish_internal_testflight:
+        description: "由 Nightly reusable workflow 上传 Internal TestFlight"
+        required: false
+        default: false
+        type: boolean
+      what_to_test:
+        description: "TestFlight What to Test"
+        required: false
+        default: "Nightly Internal TestFlight"
+        type: string
   push:
     branches:
       - main
@@ -20,6 +36,8 @@ on:
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
       - "scripts/check-app-store-metadata.sh"
+      - "scripts/ios_asc_cli.sh"
+      - "scripts/test-ios-asc-cli.sh"
       - "scripts/check-source-size.sh"
       - "scripts/check-mimi-protocol-contract.sh"
       - "docs/app-store/**"
@@ -28,18 +46,28 @@ on:
       - "docs/terms-of-use.md"
       - "docs/mimi-protocol-contracts.md"
       - ".github/workflows/ios-ci.yml"
+      - ".github/workflows/nightly.yml"
+      - "scripts/check-nightly-release.sh"
+      - "scripts/check-pr-gate.sh"
+      - "scripts/ci-pr-scope.sh"
+      - "docs/nightly-release.md"
+      - "docs/local-testflight.md"
+      - "config/release/ios-asc-cli.env"
+      - "config/release/ios-testflight.local.env"
+      - "README.md"
+      - "README.zh-CN.md"
       - ".xcodebuildmcp/config.yaml"
   workflow_dispatch:
     inputs:
       publish_app_store:
-        description: "在稳定 macOS 26 runner 上归档并上传 App Store 构建"
+        description: "在稳定 macOS 26 runner 上归档并上传 Internal TestFlight（不提交 App Store 审核）"
         required: true
         default: false
         type: boolean
       what_to_test:
         description: "TestFlight What to Test"
         required: true
-        default: "App Store 正式审核候选构建：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
+        default: "Internal TestFlight 正式候选：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
         type: string
 
 permissions:
@@ -47,16 +75,23 @@ permissions:
 
 concurrency:
   group: ios-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # TestFlight 上传不能被同一 main 上的新 push 或手工运行中途取消；PR Gate
+  # 自身仍会取消过时的 PR caller，因此这里优先保证签名发布的原子性。
+  cancel-in-progress: false
 
 jobs:
   conversation-regressions:
-    # MimiRemote 的最低版本是 iOS 26；macos-26 runner 默认提供稳定版 Xcode 26 和 iOS 26 Simulator。
+    # 使用稳定版 Xcode 26 / iOS 26 Simulator 运行回归；工程仍以 iOS 18 为 deployment target，
+    # 因此编译阶段会检查所有 iOS 26+ API 是否具备有效 availability fallback。
     runs-on: macos-26
     timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          clean: true
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -69,6 +104,31 @@ jobs:
           go version
           xcodebuild -version
           xcrun simctl list devices available
+
+      - name: Verify iOS 18 deployment target
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target_name in \
+            MimiRemote \
+            MimiCarStatusWidgetExtension \
+            MimiRemoteTests \
+            MimiRemoteUITests
+          do
+            deployment_targets="$(
+              xcodebuild \
+                -project ios/MimiRemote/MimiRemote.xcodeproj \
+                -target "$target_name" \
+                -configuration Debug \
+                -showBuildSettings 2>/dev/null \
+                | awk '$1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" { print $3 }' \
+                | sort -u
+            )"
+            if [[ "$deployment_targets" != "18.0" ]]; then
+              echo "$target_name expected iOS deployment target 18.0, got: $deployment_targets" >&2
+              exit 1
+            fi
+          done
 
       - name: Resolve fixed CI simulator
         shell: bash
@@ -93,6 +153,9 @@ jobs:
       - name: Check App Store metadata
         run: bash ./scripts/check-app-store-metadata.sh
 
+      - name: Check pinned asc CLI integration
+        run: bash ./scripts/test-ios-asc-cli.sh
+
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
 
@@ -109,27 +172,64 @@ jobs:
         run: bash ./scripts/test-ios-localization-smoke.sh
 
   app-store-release:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
+    needs: conversation-regressions
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
+      inputs.publish_internal_testflight
     runs-on: macos-26
     timeout-minutes: 45
     env:
       IOS_BUNDLE_ID: com.gaixianggeng.mimi
+      IOS_WIDGET_BUNDLE_ID: com.gaixianggeng.mimi.carstatuswidget
       DEVELOPMENT_TEAM: 9HZ89R58PZ
       TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
-      IOS_TESTFLIGHT_UPLOAD: "1"
+      IOS_TESTFLIGHT_UPLOAD: >-
+        ${{ ((github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
+          inputs.publish_internal_testflight) && '1' || '0' }}
       IOS_TESTFLIGHT_VALIDATE: "0"
       IOS_RELEASE_EXPECTED_MACOS_MAJOR: "26"
       IOS_RELEASE_EXPECTED_XCODE_VERSION: "26.6"
       IOS_RELEASE_EXPECTED_XCODE_BUILD: 17F113
       IOS_RELEASE_EXPECTED_SDK_VERSION: "26.5"
       IOS_RELEASE_EXPECTED_SDK_BUILD: 23F81a
+      # 第一阶段只记录差异；Ruby 预检仍是实际构建号的唯一来源。
+      IOS_ASC_BUILD_NUMBER_MODE: shadow
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
     steps:
       - name: Checkout clean release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           clean: true
+
+      # 所有签名材料都在后续 step 才注入；这里先锁定官方仓库当前 main
+      # 的同一个 immutable commit，手工从其他分支触发会 fail closed。
+      - name: Trust gate before App Store signing
+        shell: bash
+        env:
+          CANDIDATE_SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
+            || { echo "iOS TestFlight 只允许在官方仓库运行。" >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo "iOS TestFlight 只允许从 refs/heads/main 运行。" >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "iOS TestFlight 需要 40 位 immutable event SHA。" >&2; exit 1; }
+          [[ "$CANDIDATE_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "iOS TestFlight source_ref 必须是 40 位 commit SHA。" >&2; exit 1; }
+          head_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          [[ "$head_sha" == "$GITHUB_SHA" &&
+            "$GITHUB_SHA" == "$CANDIDATE_SOURCE_REF" &&
+            "$main_sha" == "$CANDIDATE_SOURCE_REF" ]] \
+            || {
+              echo "iOS TestFlight source 不是当前 origin/main：head=$head_sha event=$GITHUB_SHA source=$CANDIDATE_SOURCE_REF main=$main_sha" >&2
+              exit 1
+            }
 
       - name: Select exact stable Xcode
         shell: bash
@@ -166,6 +266,16 @@ jobs:
           [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == "26.5" ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-build-version)" == "23F81a" ]]
 
+      - name: Prepare pinned asc CLI shadow tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          asc_bin="$RUNNER_TEMP/mimi-release-tools/asc"
+          echo "ASC_CLI_BIN=$asc_bin" >> "$GITHUB_ENV"
+          if ! bash ./scripts/ios_asc_cli.sh install --destination "$asc_bin"; then
+            echo "::warning::固定版本 asc 安装或校验失败；本次发布保留 Ruby 预检并记录 shadow error。"
+          fi
+
       - name: Prepare App Store signing
         shell: bash
         env:
@@ -173,6 +283,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
@@ -183,6 +294,7 @@ jobs:
             ASC_ISSUER_ID \
             ASC_PRIVATE_KEY \
             IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 \
+            IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 \
             IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
             IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
             IOS_KEYCHAIN_PASSWORD; do
@@ -200,12 +312,15 @@ jobs:
           certificate="$release_secrets/distribution.p12"
           profile="$release_secrets/app-store.mobileprovision"
           profile_plist="$release_secrets/profile.plist"
+          widget_profile="$release_secrets/widget-app-store.mobileprovision"
+          widget_profile_plist="$release_secrets/widget-profile.plist"
           keychain="$release_secrets/signing.keychain-db"
 
           printf '%s' "$ASC_PRIVATE_KEY" > "$api_key"
           printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
           printf '%s' "$IOS_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
-          chmod 600 "$api_key" "$certificate" "$profile"
+          printf '%s' "$IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$widget_profile"
+          chmod 600 "$api_key" "$certificate" "$profile" "$widget_profile"
 
           security cms -D -i "$profile" > "$profile_plist"
           profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
@@ -213,13 +328,28 @@ jobs:
           profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$profile_plist")"
           profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
           profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist")"
+          profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$profile_plist")"
           [[ "$profile_team" == "$DEVELOPMENT_TEAM" ]]
           [[ "$profile_app_id" == "$DEVELOPMENT_TEAM.$IOS_BUNDLE_ID" ]]
+          [[ "$profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]]
           ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$profile_expiration"
+
+          security cms -D -i "$widget_profile" > "$widget_profile_plist"
+          widget_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$widget_profile_plist")"
+          widget_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$widget_profile_plist")"
+          widget_profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$widget_profile_plist")"
+          widget_profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$widget_profile_plist")"
+          widget_profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$widget_profile_plist")"
+          widget_profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$widget_profile_plist")"
+          [[ "$widget_profile_team" == "$DEVELOPMENT_TEAM" ]]
+          [[ "$widget_profile_app_id" == "$DEVELOPMENT_TEAM.$IOS_WIDGET_BUNDLE_ID" ]]
+          [[ "$widget_profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]]
+          ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$widget_profile_expiration"
 
           profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$profiles_dir"
           cp "$profile" "$profiles_dir/$profile_uuid.mobileprovision"
+          cp "$widget_profile" "$profiles_dir/$widget_profile_uuid.mobileprovision"
 
           security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
@@ -256,6 +386,9 @@ jobs:
             echo "IOS_PROVISIONING_PROFILE_SPECIFIER<<__PROFILE__"
             echo "$profile_name"
             echo "__PROFILE__"
+            echo "IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER<<__WIDGET_PROFILE__"
+            echo "$widget_profile_name"
+            echo "__WIDGET_PROFILE__"
             echo "IOS_CODE_SIGN_IDENTITY<<__IDENTITY__"
             echo "$signing_identity"
             echo "__IDENTITY__"
@@ -264,3 +397,42 @@ jobs:
       - name: Archive, audit, upload, and distribute build
         shell: bash
         run: bash ./scripts/ios_testflight_ci.sh
+
+      - name: Write Nightly TestFlight evidence
+        if: inputs.publish_internal_testflight
+        shell: bash
+        env:
+          EVIDENCE_SHA: ${{ inputs.source_ref || github.sha }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/mimi-testflight-evidence"
+          mkdir -p "$evidence_dir"
+          EVIDENCE_PATH="$evidence_dir/evidence.json" \
+            ruby -rtime -rjson -e '
+              path = ENV.fetch("EVIDENCE_PATH")
+              payload = {
+                source_sha: ENV.fetch("EVIDENCE_SHA"),
+                run_id: ENV.fetch("GITHUB_RUN_ID"),
+                run_attempt: ENV.fetch("GITHUB_RUN_ATTEMPT", "1"),
+                repository: ENV.fetch("GITHUB_REPOSITORY"),
+                workflow: ENV.fetch("GITHUB_WORKFLOW"),
+                event: ENV.fetch("GITHUB_EVENT_NAME"),
+                uploaded: true,
+                uploaded_at_utc: Time.now.utc.iso8601
+              }
+              File.write(path, JSON.pretty_generate(payload) + "\n")
+            '
+          ruby -rjson -e '
+            value = JSON.parse(File.read(ARGV.fetch(0)))
+            abort "Nightly evidence uploaded 必须为 true" unless value["uploaded"] == true
+            abort "Nightly evidence source_sha 不完整" unless value["source_sha"].match?(/\A[0-9a-f]{40}\z/)
+          ' "$evidence_dir/evidence.json"
+
+      - name: Upload Nightly TestFlight evidence
+        if: inputs.publish_internal_testflight
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-testflight-${{ inputs.source_ref || github.sha }}
+          path: ${{ runner.temp }}/mimi-testflight-evidence/evidence.json
+          if-no-files-found: error
+          retention-days: 30

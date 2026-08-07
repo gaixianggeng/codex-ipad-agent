@@ -74,26 +74,6 @@ private extension View {
         )
     }
 
-    func settingsInlinePickerStyle() -> some View {
-        modifier(SettingsInlinePickerStyleModifier())
-    }
-}
-
-private struct SettingsInlinePickerStyleModifier: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    func body(content: Content) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        content
-            .pickerStyle(.menu)
-            // Picker 的选中值属于说明层级：与 NavigationLink 的右侧值使用同一
-            // subheadline 和 secondaryText，不能跟随页面强调色抢过左侧标题。
-            .font(themeStore.uiFont(.subheadline))
-            .foregroundStyle(tokens.secondaryText)
-            .tint(tokens.secondaryText)
-    }
 }
 
 struct SettingsView: View {
@@ -115,6 +95,8 @@ struct SettingsView: View {
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
     @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
+    @State private var didApplyDebugLaunchRoute = false
+    @State private var showsConnectionManagement = false
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -155,6 +137,7 @@ struct SettingsView: View {
                 try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
             }
         }
+        .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 
     @ViewBuilder
@@ -172,8 +155,16 @@ struct SettingsView: View {
                     .background(tokens.background.ignoresSafeArea())
             }
         }
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : L10n.text("ui.me"))
-        .navigationBarTitleDisplayMode(initialNavigationTitleDisplayMode)
+        // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
+        // 顶部再来一个同名大标题只是白占一屏高度。
+        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
+        .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
+        .navigationDestination(isPresented: $showsConnectionManagement) {
+            ConnectionManagementView(
+                qrScannerPresentation: qrScannerPresentation,
+                onRequestProfileRename: { profileRenamePresentation.present($0) }
+            )
+        }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
                 ToolbarItem(placement: .confirmationAction) {
@@ -194,6 +185,19 @@ struct SettingsView: View {
     private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
         // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
         horizontalSizeClass == .compact ? .large : .inline
+    }
+
+    private func applyDebugLaunchRouteIfNeeded() {
+#if DEBUG
+        guard !didApplyDebugLaunchRoute else { return }
+        didApplyDebugLaunchRoute = true
+
+        // App Store 截图需要直接到达 Mac 连接页，避免依赖屏幕尺寸与滚动位置做自动点击。
+        // 仅 Debug 构建读取该参数，Release 与普通设置导航保持不变。
+        if ProcessInfo.processInfo.arguments.contains("--debug-open-mac-connection") {
+            showsConnectionManagement = true
+        }
+#endif
     }
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
@@ -219,13 +223,15 @@ struct SettingsView: View {
                     claudeDisplay: claudeUsage,
                     includesClaude: sessionStore.hasClaudeRuntimeChannel,
                     snapshot: sessionStore.accountTokenUsage,
-                    isRefreshing: sessionStore.isRefreshingAccountTokenUsage
+                    activity: sessionStore.accountTokenActivity,
+                    // 刷新按钮代表整卡刷新，配额或活动任一在飞都转；
+                    // 活动面板的状态只看 activity 自己，不受配额刷新影响。
+                    isRefreshing: sessionStore.isRefreshingAccountTokenActivity
                         || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
                         || (
                             sessionStore.hasClaudeRuntimeChannel
                                 && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
                         ),
-                    isUnavailable: sessionStore.isAccountTokenUsageUnavailable,
                     onRefresh: refreshAccountUsage
                 )
                 .listRowInsets(EdgeInsets())
@@ -233,7 +239,57 @@ struct SettingsView: View {
                 .listRowSeparator(.hidden)
                 .accessibilityIdentifier("settings.tokenUsage")
             } header: {
-                Text(L10n.text("ui.token_usage"))
+                // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
+                // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
+                // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题。
+                HStack(alignment: .center, spacing: 8) {
+                    sectionHeader(L10n.text("ui.token_usage"), tokens: tokens)
+
+                    // 宽屏把累计值推到最右、和刷新按钮成组；窄屏这样会在标题和累计值之间
+                    // 撑出一大片空，所以让它紧跟标题，Spacer 留到刷新按钮之前。
+                    if horizontalSizeClass == .compact {
+                        lifetimeTokenLabel(tokens: tokens)
+                        Spacer(minLength: 8)
+                    } else {
+                        Spacer(minLength: 8)
+                        lifetimeTokenLabel(tokens: tokens)
+                    }
+
+                    AccountUsageRefreshButton(
+                        isRefreshing: sessionStore.isRefreshingAccountTokenActivity
+                            || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+                            || (
+                                sessionStore.hasClaudeRuntimeChannel
+                                    && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
+                            ),
+                        onRefresh: refreshAccountUsage
+                    )
+                }
+            }
+
+            // Mac 连接紧随额度：断线时这张卡会自己变警示态，排在第二屏位置仍然一眼可见，
+            // 不必为此把最常看的额度挤下去。
+            Section {
+                Button {
+                    showsConnectionManagement = true
+                } label: {
+                    SettingsConnectionCard(
+                        deviceName: currentMacDisplayName,
+                        status: compactConnectionStatusText,
+                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
+                        statusTint: connectionStatusTone(tokens: tokens),
+                        warningText: connectionWarningText
+                    )
+                }
+                // 用 Button 而不是 NavigationLink：卡片自己画了箭头，
+                // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("settings.connectionManagement")
+            } header: {
+                sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
             }
 
             Section {
@@ -250,71 +306,39 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appearance")
 
-                Picker(selection: appLanguageSelection) {
-                    ForEach(AppLanguage.allCases) { language in
-                        Text(language.displayName)
-                            .tag(language)
-                    }
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.language"),
-                        systemImage: "globe"
-                    )
-                }
-                .settingsInlinePickerStyle()
+                SettingsChoiceRow(
+                    title: L10n.text("ui.language"),
+                    systemImage: "globe",
+                    options: AppLanguage.allCases,
+                    selection: appLanguageSelection
+                )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
 
-                Picker(selection: voiceInputProviderSelection) {
-                    ForEach(VoiceInputProvider.allCases) { provider in
-                        Text(provider.title)
-                            .tag(provider)
-                    }
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.voice_input"),
-                        systemImage: "waveform"
-                    )
-                }
-                .settingsInlinePickerStyle()
+                SettingsChoiceRow(
+                    title: L10n.text("ui.voice_input"),
+                    systemImage: "waveform",
+                    options: VoiceInputProvider.availableProviders(),
+                    selection: voiceInputProviderSelection
+                )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.voiceInput")
 
-                Picker(selection: defaultPermissionModeSelection) {
-                    ForEach(ComposerPermissionMode.allCases) { mode in
-                        Text(mode.title)
-                            .tag(mode)
-                    }
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.default_permissions"),
-                        systemImage: "lock.shield"
-                    )
-                }
-                .settingsInlinePickerStyle()
+                // 四个模式各自有 detail，而且是安全相关的选择：值得整页逐条读完再选。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.default_permissions"),
+                    systemImage: "lock.shield",
+                    options: ComposerPermissionMode.allCases,
+                    selection: defaultPermissionModeSelection,
+                    presentation: .page
+                )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
-                Text(L10n.text("ui.my_preferences"))
+                sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
             }
 
             Section {
-                NavigationLink {
-                    ConnectionManagementView(
-                        qrScannerPresentation: qrScannerPresentation,
-                        onRequestProfileRename: { profileRenamePresentation.present($0) }
-                    )
-                } label: {
-                    SettingsMacDevicesSummaryLabel(
-                        currentDevice: currentMacDisplayName,
-                        status: compactConnectionStatusText,
-                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
-                        statusTint: connectionStatusTone(tokens: tokens)
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.connectionManagement")
-
                 NavigationLink {
                     DiagnosticsAndSupportSettingsView(
                         showsHistoryDiagnostics: developerModeEnabled
@@ -352,14 +376,12 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.aboutLegal")
             } header: {
-                Text(L10n.text("ui.more"))
-            } footer: {
-                if let connectionWarningText {
-                    Text(connectionWarningText)
-                }
+                sectionHeader(L10n.text("ui.more"), tokens: tokens)
             }
         }
+        // 分组之间靠留白划分，行本身不再套在圆角白卡里。
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
+        .listRowBackground(Color.clear)
         .themedSettingsForm(tokens: tokens)
         .task(id: appStore.activeHostScope) {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
@@ -396,9 +418,33 @@ struct SettingsView: View {
         }
     }
 
+    /// 累计值未知时整行不出现。渲染成 `累计 Token · —` 会被读成「累计是 0」。
+    @ViewBuilder
+    private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
+        if let lifetimeTokens = sessionStore.accountTokenUsage?.summary.lifetimeTokens {
+            Text(
+                L10n.format(
+                    "ui.lifetime_token_value",
+                    TokenCountFormatter.string(lifetimeTokens)
+                )
+            )
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
+            .lineLimit(1)
+        }
+    }
+
+    /// 系统默认会把分组标题转成全大写并用最小字号，和页面其余部分不是一套排版。
+    private func sectionHeader(_ title: String, tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(.footnote, weight: .medium))
+            .foregroundStyle(tokens.secondaryText)
+            .textCase(nil)
+    }
+
     private func refreshAccountUsage() async {
         async let codexQuota: Void = sessionStore.refreshCodexUsage()
-        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage()
+        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage(forceRefresh: true)
         if sessionStore.hasClaudeRuntimeChannel {
             await sessionStore.refreshClaudeUsage()
         }
@@ -458,7 +504,9 @@ struct SettingsView: View {
 
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
-            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
+            get: {
+                VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
+            },
             set: { voiceInputProviderRawValue = $0.rawValue }
         )
     }
@@ -471,97 +519,7 @@ struct SettingsView: View {
     }
 }
 
-private struct SettingsMacDevicesSummaryLabel: View {
-    let currentDevice: String
-    let status: String
-    let savedDeviceCount: Int
-    let statusTint: Color
-
-    var body: some View {
-        SettingsStatusSummaryLabel(
-            title: L10n.text("ui.mac_devices"),
-            detail: "\(currentDevice) · \(status) · \(savedCount)",
-            systemImage: "desktopcomputer",
-            statusDotTint: statusTint,
-            symbolPointSize: 17
-        )
-    }
-
-    private var savedCount: String {
-        L10n.plural("ui.saved_macs_count", count: savedDeviceCount)
-    }
-}
-
-/// 状态模块的两个入口共享同一套双行结构，避免设备行、测速行因内容不同
-/// 产生不一致的高度、图标大小和基线。
-private struct SettingsStatusSummaryLabel: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let title: String
-    let detail: String
-    let systemImage: String
-    var detailTint: Color? = nil
-    var statusDotTint: Color? = nil
-    var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: symbolPointSize, weight: .regular))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.accent)
-                .frame(
-                    width: SettingsLayoutMetrics.iconSlot,
-                    height: SettingsLayoutMetrics.iconSlot
-                )
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(themeStore.uiFont(.body))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-
-                HStack(spacing: 5) {
-                    if let statusDotTint {
-                        Circle()
-                            .fill(statusDotTint)
-                            .frame(width: 6, height: 6)
-                            .accessibilityHidden(true)
-                    }
-
-                    Text(detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .monospacedDigit()
-                        .foregroundStyle(detailTint ?? tokens.secondaryText)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .minimumScaleFactor(0.82)
-                        .truncationMode(.tail)
-                }
-            }
-        }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: rowHeight,
-            maxHeight: rowHeight,
-            alignment: .leading
-        )
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-    }
-
-    private var rowHeight: CGFloat {
-        dynamicTypeSize.isAccessibilitySize
-            ? SettingsLayoutMetrics.accessibilityRowHeight
-            : SettingsLayoutMetrics.standardRowHeight
-    }
-}
-
-private struct SettingsValueLabel: View {
+struct SettingsValueLabel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
@@ -579,7 +537,7 @@ private struct SettingsValueLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.accent)
+                .foregroundStyle(tokens.secondaryText)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot
@@ -1125,30 +1083,35 @@ private struct ConnectionSpeedMetricRow: View {
     }
 }
 
-private struct AccountTokenUsageCard: View {
+/// 视觉基线按状态逐个录制，因此对测试可见；页面之外没有其他调用方。
+struct AccountTokenUsageCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var themeStore: ThemeStore
 
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
     let includesClaude: Bool
     let snapshot: AccountTokenUsageSnapshot?
+    let activity: AccountTokenActivityState
     let isRefreshing: Bool
-    let isUnavailable: Bool
     let onRefresh: () async -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         ViewThatFits(in: .horizontal) {
-            if !dynamicTypeSize.isAccessibilitySize {
+            // 只有一个窗口时配额那栏只是一条进度条，撑不起 252pt 的左栏、下方会空出一片；
+            // 这种情况无论屏幕多宽都用上下排。
+            if !dynamicTypeSize.isAccessibilitySize, singleUsageItem == nil {
                 wideLayout(tokens: tokens)
                     .frame(minWidth: 620)
             }
-            phoneSideBySideLayout(tokens: tokens)
+            stackedLayout(tokens: tokens)
         }
-        .padding(18)
+        .padding(16)
         .frame(maxWidth: .infinity)
         .background(
             tokens.surface,
@@ -1168,46 +1131,55 @@ private struct AccountTokenUsageCard: View {
     }
 
     private func wideLayout(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .top, spacing: 20) {
-            quotaPanel(tokens: tokens, usesVerticalContent: false)
-                .frame(width: 236)
+        // 156pt 的最小高度会比左右内容多出一段空间；居中分配这段空间，
+        // 避免所有内容贴近卡片上缘、只在底部留下明显空白。
+        HStack(alignment: .center, spacing: 20) {
+            quotaPanel(tokens: tokens, ringDiameter: 100)
+                .frame(width: 252)
 
             Divider()
                 .overlay(tokens.border.opacity(0.72))
+                // 分隔线跟着较高的一侧拉长时，尾段会悬在另一侧内容之外。
+                .frame(maxHeight: 132)
 
-            activityPanel(tokens: tokens)
+            // 右侧格子按左栏高度放大，不再固定 86pt 而在下方空出一块。
+            activityPanel(tokens: tokens, gridHeight: 132)
                 .frame(maxWidth: .infinity)
         }
         .frame(minHeight: 156)
     }
 
-    private func phoneSideBySideLayout(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            quotaPanel(tokens: tokens, usesVerticalContent: true)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-
-            Divider()
-                .overlay(tokens.border.opacity(0.72))
-
-            activityPanel(tokens: tokens)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+    /// 窄屏不再左右各占一半。点格图本来就是横向的，宽度给足才成立；
+    /// 配额那半也终于放得下环形图和完整图例，不用再挤成两列。
+    private func stackedLayout(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            quotaPanel(tokens: tokens, ringDiameter: 84)
+            // 上下排在 iPad 上也会用到（单窗口时强制走这条），宽屏要给点格图更大的高度，
+            // 否则一条进度条上面很轻、下面 86pt 的网格撑不住整张卡。
+            activityPanel(
+                tokens: tokens,
+                gridHeight: horizontalSizeClass == .compact
+                    ? TokenActivityGridMetrics.totalHeight
+                    : 150
+            )
         }
     }
 
-    private func quotaPanel(tokens: ThemeTokens, usesVerticalContent: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.text("ui.current_remaining"))
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-
-            if usesVerticalContent || dynamicTypeSize.isAccessibilitySize {
+    /// 卡片内不再有「当前剩余」「Token 活动」两个小标题：外层分组已经叫「Token 使用量」，
+    /// 中间那层是重复的层级；而且一边带 44pt 刷新按钮、一边只有文字，两行基线永远对不齐。
+    /// 图形本身自解释，文字标签改由 accessibilityLabel 承担。
+    private func quotaPanel(tokens: ThemeTokens, ringDiameter: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let onlyItem = singleUsageItem {
+                singleWindowBar(item: onlyItem, tokens: tokens)
+            } else if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 14) {
-                    usageRings(diameter: compactRingDiameter)
+                    usageRings(tokens: tokens, diameter: 92)
                     usageLegend(tokens: tokens)
                 }
             } else {
                 HStack(alignment: .center, spacing: 16) {
-                    usageRings(diameter: 92)
+                    usageRings(tokens: tokens, diameter: ringDiameter)
                     usageLegend(tokens: tokens)
                 }
             }
@@ -1215,19 +1187,73 @@ private struct AccountTokenUsageCard: View {
         .accessibilityIdentifier("settings.tokenUsage.quota")
     }
 
-    private var compactRingDiameter: CGFloat {
-        dynamicTypeSize.isAccessibilitySize ? 92 : 84
+    /// 只接了一个 runtime（例如没有 Claude 通道）时，三环退化成一条进度条。
+    private var singleUsageItem: CombinedUsageItem? {
+        let items = usageItems
+        return items.count == 1 ? items[0] : nil
     }
 
-    private func usageRings(diameter: CGFloat) -> some View {
-        CombinedUsageRingsGraphic(
-            items: usageItems,
-            expectedRingCount: 3,
-            diameter: diameter,
-            lineWidth: 6
-        )
-        .frame(width: diameter, height: diameter)
+    private func usageRings(tokens: ThemeTokens, diameter: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            ZStack {
+                CombinedUsageRingsGraphic(
+                    items: usageItems,
+                    expectedRingCount: 3,
+                    diameter: diameter,
+                    lineWidth: Self.ringLineWidth,
+                    ringSpacing: Self.ringSpacing
+                )
+
+                // 三个百分比平权并列时，用户看不出哪个窗口先耗尽。环心只放最紧张的那个，
+                // 明细仍由右侧图例给出。无障碍字号下环心装不下，改由图例独自承担。
+                //
+                // 环心不再重复写出窗口名：最短的那条弧本身就指明了是哪个窗口，
+                // 再写一遍 provider · window 会让同一条信息在卡片上出现第三次。
+                // 数字用正文色而不是该窗口的 tint——tint 是为环形轨道挑的，
+                // 放到浅色底上做文字达不到需要的对比度。
+                if !dynamicTypeSize.isAccessibilitySize, let tightestItem {
+                    Text(tightestItem.window.remainingPercentText ?? "—")
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .frame(width: Self.ringInnerHoleDiameter(for: diameter))
+                }
+            }
+            .frame(width: diameter, height: diameter)
+        }
+        // 环形和环心数字是同一条信息，拆成两个元素读会让 VoiceOver 念出无意义的裸数字。
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.current_remaining"))
+        .accessibilityValue(ringsAccessibilityValue)
+    }
+
+    private static let ringLineWidth: CGFloat = 6
+    // 环间距直接决定环心可用宽度：8pt 时 84 直径只剩 22pt，放不下「17%」会被截成「1...」。
+    private static let ringSpacing: CGFloat = 6
+
+    /// 三环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
+    private static func ringInnerHoleDiameter(for diameter: CGFloat) -> CGFloat {
+        let step = (ringLineWidth + ringSpacing) * 2
+        return max(diameter - step * 2 - ringLineWidth, 24)
+    }
+
+    /// 剩余比例最低的窗口，也就是最先耗尽的那个。没有可用进度时不猜。
+    private var tightestItem: CombinedUsageItem? {
+        usageItems
+            .filter { $0.window.remainingProgress != nil }
+            .min { ($0.window.remainingProgress ?? 1) < ($1.window.remainingProgress ?? 1) }
+    }
+
+    private var ringsAccessibilityValue: String {
+        let items = usageItems
+        guard !items.isEmpty else {
+            return L10n.text("ui.token_activity_waiting")
+        }
+        return items
+            .map { "\($0.providerName) \($0.window.label) \($0.window.remainingPercentText ?? "—")" }
+            .joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -1245,116 +1271,361 @@ private struct AccountTokenUsageCard: View {
             .foregroundStyle(tokens.secondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            VStack(alignment: .leading, spacing: 7) {
-                ForEach(items) { item in
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(item.tint)
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-
-                        Text("\(item.providerName) · \(item.window.label)")
-                            .font(themeStore.uiFont(.caption, weight: .medium))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Spacer(minLength: 4)
-
-                        Text(item.window.remainingPercentText ?? "—")
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(
-                                item.window.remainingProgress == nil
-                                    ? tokens.secondaryText
-                                    : item.tint
-                            )
-                    }
-                    .accessibilityElement(children: .combine)
+            // 一行还是两行必须整组一起决定。让每项各自 ViewThatFits 会出现
+            // 「第一项一行、第二项两行、第三项又一行」的锯齿，看着就是乱换行。
+            ViewThatFits(in: .horizontal) {
+                if !dynamicTypeSize.isAccessibilitySize {
+                    legendStack(items: items, tokens: tokens, usesSingleLine: true)
                 }
+                legendStack(items: items, tokens: tokens, usesSingleLine: false)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func activityPanel(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    activityTitle(tokens: tokens)
+    private func legendStack(
+        items: [CombinedUsageItem],
+        tokens: ThemeTokens,
+        usesSingleLine: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: usesSingleLine ? 7 : 10) {
+            ForEach(items) { item in
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(item.tint)
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
 
-                    Spacer(minLength: 4)
-
-                    lifetimeTokenLabel(tokens: tokens)
-                        .fixedSize(horizontal: true, vertical: false)
-
-                    AccountUsageRefreshButton(
-                        isRefreshing: isRefreshing,
-                        onRefresh: onRefresh
+                    legendItemContent(
+                        item: item,
+                        tokens: tokens,
+                        usesSingleLine: usesSingleLine
                     )
                 }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        activityTitle(tokens: tokens)
-                        Spacer(minLength: 4)
-                        AccountUsageRefreshButton(
-                            isRefreshing: isRefreshing,
-                            onRefresh: onRefresh
+    /// 窄列(iPhone 环形右侧只有约 240pt)放不下三段，就把重置时间落到第二行；
+    /// iPad 的图例列宽得多，一行就能同时给出窗口、重置时间和剩余比例。
+    /// 固定成两行会让 iPad 显得拥挤，固定成一行则会在 iPhone 上被压扁。
+    @ViewBuilder
+    private func legendItemContent(
+        item: CombinedUsageItem,
+        tokens: ThemeTokens,
+        usesSingleLine: Bool
+    ) -> some View {
+        let name = Text("\(item.providerName) · \(item.window.label)")
+            .font(themeStore.uiFont(.caption, weight: .medium))
+            .foregroundStyle(tokens.primaryText)
+
+        // 只有「还剩多少」而没有「什么时候回血」，用户没法判断要不要现在省着用。
+        let reset = Text(item.window.resetText)
+            .font(themeStore.uiFont(.caption2))
+            .foregroundStyle(tokens.tertiaryText)
+
+        let percent = Text(item.window.remainingPercentText ?? "—")
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .monospacedDigit()
+            .foregroundStyle(
+                item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+            )
+
+        if usesSingleLine {
+            HStack(spacing: 8) {
+                name.lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                reset.lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                percent
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    name
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    percent
+                }
+                reset.lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+    }
+
+    /// 只有一个窗口时三环里两条是空轨道，大半个圆是无意义的留白。
+    /// 单窗口改用一条占满宽度的进度条，同样的信息密度换来更少的空白。
+    private func singleWindowBar(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // 窗口、重置时间和剩余比例挤在一行，配额区就只占两行；
+            // 原先标题、进度条、重置各占一行，把整张卡压得头重脚轻。
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(item.providerName) · \(item.window.label)")
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Text(item.window.resetText)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(item.window.remainingPercentText ?? "—")
+                    // 单窗口时这是卡片里唯一的数字，但不该大到压过下方点格图。
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tokens.primaryText)
+            }
+
+            GeometryReader { proxy in
+                let progress = item.window.remainingProgress ?? 0
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(tokens.tertiaryText.opacity(0.18))
+
+                    Capsule()
+                        // 单窗口没有三环的颜色编码要对应，用主题强调色和下方点格图保持一套配色；
+                        // item.tint 那套青/粉/紫只在多环并列、需要靠颜色区分窗口时才有意义。
+                        .fill(tokens.accent)
+                        .frame(width: max(proxy.size.width * progress, progress > 0 ? 6 : 0))
+                        .animation(
+                            reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
+                            value: progress
                         )
-                    }
-                    lifetimeTokenLabel(tokens: tokens)
                 }
             }
+            .frame(height: 6)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.text("ui.current_remaining"))
+        .accessibilityValue(ringsAccessibilityValue)
+    }
 
-            if let buckets = snapshot?.dailyUsageBuckets {
-                TokenActivityDotGrid(buckets: buckets)
-            } else {
-                HStack(spacing: 10) {
-                    if isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "chart.dots.scatter")
-                            .foregroundStyle(tokens.tertiaryText)
-                    }
-                    Text(activityUnavailableText)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                }
-                .frame(maxWidth: .infinity, minHeight: 74, alignment: .center)
-                .accessibilityIdentifier("settings.tokenActivity.unavailable")
-            }
+    private func activityPanel(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 主内容和占位文案都在同一个高度预算里测量；这样状态切换不会因某条
+            // 本地化文案换行而改变卡片高度，同时不以固定高度裁掉 Dynamic Type 文本。
+            activityBody(tokens: tokens, gridHeight: gridHeight)
+            activityCaptionArea(tokens: tokens)
         }
         .accessibilityIdentifier("settings.tokenUsage.activity")
     }
 
-    private func activityTitle(tokens: ThemeTokens) -> some View {
-        Text(L10n.text("ui.token_activity"))
-            .font(themeStore.uiFont(.subheadline, weight: .semibold))
-            .foregroundStyle(tokens.primaryText)
-    }
+    private func activityBody(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            activityContent(tokens: tokens, gridHeight: gridHeight)
 
-    private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
-        Text(
-            L10n.format(
-                "ui.lifetime_token_value",
-                TokenCountFormatter.string(snapshot?.summary.lifetimeTokens)
-            )
+            // 占位态的最长本地化文案决定最小高度。隐藏测量视图仍参与布局，
+            // 但完全从 VoiceOver 树移除；网格态也预留同样的空间，状态切换不会跳。
+            ZStack {
+                ForEach(
+                    Array(activityPlaceholderCandidates.enumerated()),
+                    id: \.offset
+                ) { candidate in
+                    HStack(spacing: 10) {
+                        Color.clear
+                            .frame(width: 18, height: 18)
+
+                        Text(candidate.element)
+                            .font(themeStore.uiFont(.caption))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .hidden()
+                    .accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: gridHeight,
+            alignment: .topLeading
         )
-        .font(themeStore.uiFont(.caption))
-        .foregroundStyle(tokens.secondaryText)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var activityUnavailableText: String {
-        if isRefreshing {
+    @ViewBuilder
+    private func activityContent(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
+        switch activity {
+        case .loaded(let buckets, let asOf):
+            activityGrid(
+                buckets: buckets,
+                endingAt: asOf,
+                gridHeight: gridHeight
+            )
+
+        case .empty(let asOf):
+            // 画成一整片未活动的格子，比一句话更能说明“接口是通的，只是还没有记录”。
+            activityGrid(
+                buckets: [],
+                endingAt: asOf,
+                gridHeight: gridHeight
+            )
+
+        case .failed(let previous):
+            if let previous, !previous.buckets.isEmpty {
+                activityGrid(
+                    buckets: previous.buckets,
+                    endingAt: previous.asOf,
+                    gridHeight: gridHeight
+                )
+            } else {
+                activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
+            }
+
+        case .idle, .loading, .unsupported:
+            activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
+        }
+    }
+
+    private func activityGrid(
+        buckets: [AccountTokenUsageDailyBucket],
+        endingAt: Date,
+        gridHeight: CGFloat
+    ) -> some View {
+        TokenActivityDotGrid(
+            buckets: buckets,
+            endingAt: endingAt,
+            height: gridHeight
+        )
+    }
+
+    private func activityCaptionArea(tokens: ThemeTokens) -> some View {
+        let caption = activityCaptionText
+
+        return ZStack(alignment: .topLeading) {
+            // 用真实 caption 字体测量全部候选本地化文案，取其中自然换行后的最大高度。
+            // 不能用固定像素高度，否则放大文字或切换语言后会裁切。
+            ForEach(
+                Array(activityCaptionCandidates.enumerated()),
+                id: \.offset
+            ) { candidate in
+                Text(candidate.element)
+                    .font(themeStore.uiFont(.caption2))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+
+            if let caption {
+                Text(caption)
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(activityCaptionTint(tokens: tokens))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(activityCaptionIdentifier)
+            } else {
+                // loaded/loading/unsupported/failed(nil) 没有 caption，但必须保留相同布局空间；
+                // 透明占位不能进入 VoiceOver，否则会多出一个空的可访问元素。
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHidden(caption == nil)
+    }
+
+    private var activityCaptionText: String? {
+        switch activity {
+        case .empty:
+            return L10n.text("ui.token_activity_empty")
+        case .failed(let previous):
+            return previous?.buckets.isEmpty == false
+                ? L10n.text("ui.token_activity_stale")
+                : nil
+        case .idle, .loading, .loaded, .unsupported:
+            return nil
+        }
+    }
+
+    private func activityCaptionTint(tokens: ThemeTokens) -> Color {
+        if case .failed(let previous) = activity,
+           previous?.buckets.isEmpty == false
+        {
+            return tokens.warning
+        }
+        return tokens.secondaryText
+    }
+
+    private var activityCaptionIdentifier: String {
+        switch activity {
+        case .empty:
+            return "settings.tokenActivity.empty"
+        case .failed:
+            return "settings.tokenActivity.stale"
+        case .idle, .loading, .loaded, .unsupported:
+            return "settings.tokenActivity.caption"
+        }
+    }
+
+    private var activityCaptionCandidates: [String] {
+        [
+            L10n.text("ui.token_activity_empty"),
+            L10n.text("ui.token_activity_stale")
+        ]
+    }
+
+    private var activityPlaceholderCandidates: [String] {
+        [
+            L10n.text("ui.loading_token_activity"),
+            L10n.text("ui.token_activity_unavailable"),
+            L10n.text("ui.token_activity_failed"),
+            L10n.text("ui.token_activity_waiting")
+        ]
+    }
+
+    /// 占位高度和真实点格图一致，状态之间切换时卡片不跳。
+    private func activityPlaceholder(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
+        HStack(spacing: 10) {
+            if case .loading = activity {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: activityPlaceholderSymbol)
+                    .foregroundStyle(
+                        isActivityFailure ? tokens.warning : tokens.tertiaryText
+                    )
+            }
+            Text(activityPlaceholderText)
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: gridHeight,
+            alignment: .center
+        )
+        .accessibilityIdentifier("settings.tokenActivity.unavailable")
+    }
+
+    private var isActivityFailure: Bool {
+        if case .failed = activity { return true }
+        return false
+    }
+
+    private var activityPlaceholderSymbol: String {
+        isActivityFailure ? "exclamationmark.triangle" : "chart.dots.scatter"
+    }
+
+    private var activityPlaceholderText: String {
+        switch activity {
+        case .loading:
             return L10n.text("ui.loading_token_activity")
-        }
-        if isUnavailable {
+        case .unsupported:
             return L10n.text("ui.token_activity_unavailable")
+        case .failed:
+            return L10n.text("ui.token_activity_failed")
+        case .idle, .empty, .loaded:
+            // empty 与 loaded 都走点格图分支，不会落到占位。
+            return L10n.text("ui.token_activity_waiting")
         }
-        return L10n.text("ui.token_activity_waiting")
     }
 
     /// 产品只需要 Codex 的长窗口，以及 Claude 的长、短两个窗口。
@@ -1408,6 +1679,100 @@ private struct AccountUsageRefreshButton: View {
                 : L10n.format("ui.refresh_value_usage", "Token")
         )
         .accessibilityIdentifier("settings.tokenUsage.refresh")
+    }
+}
+
+/// Mac 连接是全局、持续、且会失败的状态，过去却被当成普通设置项埋在
+/// 「更多」组里，断线提示还挂在整组的 footer——显示在「关于与法律」下面，
+/// 离设备行隔了三行，等于用户最需要看到它的时候最看不到。
+/// 这里把它提到首屏与 Token 卡片同级：正常时安静，异常时卡片自己变警示态。
+struct SettingsConnectionCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let deviceName: String
+    let status: String
+    let savedDeviceCount: Int
+    let statusTint: Color
+    let warningText: String?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let hasWarning = warningText != nil
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 20, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(hasWarning ? tokens.warning : tokens.secondaryText)
+                    .frame(width: SettingsLayoutMetrics.iconSlot)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(deviceName)
+                        .font(themeStore.uiFont(.body))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(statusTint)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+
+                        Text(detailText)
+                            .font(themeStore.uiFont(.footnote))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                            .minimumScaleFactor(0.82)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+
+            // 断线提示回到它描述的那张卡片里，不再是三行之外的分组 footer。
+            if let warningText {
+                Text(warningText)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.connection.warning")
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            tokens.surface,
+            in: RoundedRectangle(
+                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                style: .continuous
+            )
+            .stroke(
+                hasWarning ? tokens.warning.opacity(0.55) : tokens.border.opacity(0.48),
+                lineWidth: hasWarning ? 1 : 0.5
+            )
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detailText: String {
+        let saved = L10n.plural("ui.saved_macs_count", count: savedDeviceCount)
+        return "\(status) · \(saved)"
     }
 }
 
@@ -1550,194 +1915,6 @@ private struct AboutAndLegalSettingsView: View {
         }
         .themedSettingsForm(tokens: tokens)
         .navigationTitle(L10n.text("ui.about_and_legal"))
-    }
-}
-
-private struct InitialPairingView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    let onRequestProfileRename: (ConnectionProfile) -> Void
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Form {
-            InitialConnectionSettingsSections(
-                qrScannerPresentation: qrScannerPresentation,
-                onRequestProfileRename: onRequestProfileRename
-            )
-        }
-        .themedSettingsForm(tokens: tokens)
-        // 连接是短表单而不是数据表；宽窗口里限制行长，按钮和输入框不会被拉成整屏。
-        .frame(maxWidth: 720)
-        .frame(maxWidth: .infinity)
-        .background(tokens.background.ignoresSafeArea())
-    }
-}
-
-private struct SettingsDashboardSection<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    let title: String
-    let footer: String
-    let content: Content
-
-    init(title: String, footer: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.footer = footer
-        self.content = content()
-    }
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(themeStore.uiFont(.headline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-                .padding(.horizontal, 2)
-
-            VStack(spacing: 0) {
-                content
-            }
-            .background(tokens.elevatedSurface.opacity(0.82), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(tokens.border, lineWidth: 1)
-            }
-
-            Text(footer)
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(tokens.secondaryText)
-                .padding(.horizontal, 2)
-        }
-    }
-}
-
-private struct SettingsDashboardNavigationRow<Destination: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    let systemImage: String
-    let title: String
-    let value: String
-    let showsSeparator: Bool
-    let destination: Destination
-
-    init(
-        systemImage: String,
-        title: String,
-        value: String,
-        showsSeparator: Bool = true,
-        @ViewBuilder destination: () -> Destination
-    ) {
-        self.systemImage = systemImage
-        self.title = title
-        self.value = value
-        self.showsSeparator = showsSeparator
-        self.destination = destination()
-    }
-
-    var body: some View {
-        NavigationLink {
-            destination
-        } label: {
-            SettingsDashboardRowContent(
-                systemImage: systemImage,
-                title: title,
-                value: value,
-                showsSeparator: showsSeparator,
-                trailing: Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-            )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct SettingsDashboardToggleRow: View {
-    @Binding var isOn: Bool
-    let systemImage: String
-    let title: String
-    let value: String
-    let showsSeparator: Bool
-
-    init(
-        systemImage: String,
-        title: String,
-        value: String,
-        isOn: Binding<Bool>,
-        showsSeparator: Bool = true
-    ) {
-        self.systemImage = systemImage
-        self.title = title
-        self.value = value
-        self.showsSeparator = showsSeparator
-        self._isOn = isOn
-    }
-
-    var body: some View {
-        SettingsDashboardRowContent(
-            systemImage: systemImage,
-            title: title,
-            value: value,
-            showsSeparator: showsSeparator,
-            trailing: Toggle("", isOn: $isOn)
-                .labelsHidden()
-        )
-    }
-}
-
-private struct SettingsDashboardRowContent<Trailing: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    let systemImage: String
-    let title: String
-    let value: String
-    let showsSeparator: Bool
-    let trailing: Trailing
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tokens.accent.opacity(0.12))
-                Image(systemName: systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(tokens.accent)
-            }
-            .frame(width: 40, height: 40)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-                Text(value)
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-            }
-            .layoutPriority(1)
-
-            Spacer(minLength: 10)
-
-            trailing
-                .foregroundStyle(tokens.tertiaryText)
-        }
-        .padding(.horizontal, 16)
-        .frame(minHeight: 62)
-        .contentShape(Rectangle())
-        .overlay(alignment: .bottom) {
-            if showsSeparator {
-                Rectangle()
-                    .fill(tokens.border.opacity(0.72))
-                    .frame(height: 1)
-                    .padding(.leading, 70)
-            }
-        }
     }
 }
 

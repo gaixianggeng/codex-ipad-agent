@@ -183,6 +183,7 @@ final class AppStore: ObservableObject {
             initialEndpoint = previewProfile.endpoint
             initialToken = ""
         }
+        debugLaunchConfiguration.applyStoreScreenshotFixture(profiles: &initialProfiles, activeProfileID: &initialActiveProfileID, endpoint: &initialEndpoint, token: &initialToken)
 #endif
         initialEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
         self.endpoint = initialEndpoint
@@ -204,6 +205,7 @@ final class AppStore: ObservableObject {
         )
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
+        _ = debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError)
 #endif
         // 当前客户端只保留一个 Tailscale 地址；网络直连、Peer Relay 与 DERP 切换统一交给 Tailscale。
         // 启动即清理旧公网备用地址，避免升级后继续保留已下线入口或敏感公网配置。
@@ -343,6 +345,9 @@ final class AppStore: ObservableObject {
     /// 进入后台时同时清空 Vault、公开内存 Token 与复用 Runtime。
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {
+#if DEBUG
+        guard !debugLaunchConfiguration.seedsStoreScreenshotUI else { return }
+#endif
         if activeConnectionProfileID == ephemeralLocalProfileID {
             // 开发包没有可恢复的 Keychain 项；后台保留本进程短期凭据，
             // 进程退出后自然清空，下一次启动必须重新向 agentd 领取。
@@ -366,6 +371,9 @@ final class AppStore: ObservableObject {
     /// SessionStore 恢复任何 REST/WS 之前先取回当前 Profile Token，避免后台清理后
     /// 使用空凭据触发一次无意义的 401 或创建半初始化 Runtime。
     func restoreCredentialsForForeground() async throws {
+#if DEBUG
+        if debugLaunchConfiguration.restoreStoreScreenshotCredentials(token: &token, isCredentialMemorySuspended: &isCredentialMemorySuspended, connectionStatus: &connectionStatus, lastError: &lastError) { return }
+#endif
         let lifecycleGeneration = credentialLifecycleGeneration
         let suspensionTask = credentialSuspensionTask
         await suspensionTask?.value
@@ -1142,6 +1150,9 @@ final class AppStore: ObservableObject {
     }
 
     func testConnection(endpoint: String, token: String) async {
+#if DEBUG
+        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return }
+#endif
         do {
             _ = try await validateConnection(endpoint: endpoint, token: token)
         } catch {
@@ -1156,6 +1167,9 @@ final class AppStore: ObservableObject {
     /// 避免两个探测同时改写连接状态。用户手动点击“重新测速”不经过此门闩，后续仍可随时执行。
     @discardableResult
     func testConnectionOnFirstSettingsAppearanceIfNeeded() async -> Bool {
+#if DEBUG
+        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return false }
+#endif
         guard case .pending = automaticSettingsConnectionTestState else {
             return false
         }
@@ -1197,6 +1211,9 @@ final class AppStore: ObservableObject {
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
     @discardableResult
     func preflightConnection(force: Bool = false) async -> Bool {
+#if DEBUG
+        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return true }
+#endif
         let localAvailable = await detectLocalAgent(force: force)
         if !force, case .connected = connectionStatus {
             return true

@@ -270,6 +270,7 @@ type appServerGatewayPendingHistoryRequest struct {
 	sortDirection     string
 	itemsView         string
 	useStateDBOnly    string
+	refreshHistory    string
 	filterFingerprint string
 	includeTurns      bool
 	fingerprint       string

@@ -116,6 +116,7 @@ protocol SessionStoreAPIClient {
     func listDirectories(path: String) async throws -> DirectoryListResponse
     func readFile(path: String) async throws -> FileReadResponse
     func readHistoryMedia(id: String) async throws -> FileReadResponse
+    func readHistoryOutput(id: String) async throws -> FileReadResponse
     func commandActions(path: String) async throws -> [AgentCommandAction]
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse
     func gitStatus(path: String) async throws -> GitStatusResponse
@@ -135,6 +136,8 @@ protocol SessionStoreAPIClient {
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
+    func sessionsPage(projectID: String?, runtimeProvider: String, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
+    func sessionsPage(workspace: AgentWorkspace, runtimeProvider: String, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
@@ -163,10 +166,41 @@ protocol SessionStoreAPIClient {
     ) async throws -> HistoryMessagesPage
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot?
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch
 }
 
 extension SessionStoreAPIClient {
+    func sessionsPage(
+        projectID: String?,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        try await sessionsPage(
+            projectID: projectID,
+            cursor: cursor,
+            limit: limit,
+            consistency: consistency
+        )
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        try await sessionsPage(
+            workspace: workspace,
+            cursor: cursor,
+            limit: limit,
+            consistency: consistency
+        )
+    }
+
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
         SessionsPage(sessions: [])
     }
@@ -188,8 +222,13 @@ extension SessionStoreAPIClient {
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         try await refreshRateLimit(sessionID: nil)
     }
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
-        nil
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
+        // 没有实现该能力的客户端是“不提供”，不是“请求失败”。
+        .unsupported
+    }
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
+        // 兼容旧客户端与测试替身；生产客户端会覆盖该方法并把强制刷新提示传到 agentd。
+        try await refreshAccountTokenUsage()
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []
@@ -303,6 +342,11 @@ extension SessionStoreAPIClient {
 
     func readHistoryMedia(id: String) async throws -> FileReadResponse {
         // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/app-server/history-media/{id}。
+        throw AgentAPIError.invalidResponse
+    }
+
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        // 超大历史过程输出只能通过 agentd 鉴权控制面按需读取。
         throw AgentAPIError.invalidResponse
     }
 

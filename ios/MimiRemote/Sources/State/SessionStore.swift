@@ -48,12 +48,14 @@ final class SessionStore: ObservableObject {
     @Published var sessions: [AgentSession] = [] {
         didSet {
             rebuildSessionIndexes()
+            synchronizeCarStatusSnapshot()
         }
     }
     @Published var externalActivityBySessionID: [SessionID: ExternalSessionActivity] = [:]
     @Published var remoteSessionSearchResults: [AgentSession] = [] {
         didSet {
             rebuildProjectSessionListSnapshots()
+            synchronizeCarStatusSnapshot()
         }
     }
     @Published var sessionSearchNextCursor: String?
@@ -86,8 +88,21 @@ final class SessionStore: ObservableObject {
     @Published var showingAllSessionProjectIDs: Set<String> = []
     @Published var isLoading = false
     @Published var webSocketStatus: WebSocketStatus = .disconnected
-    @Published var connectionTermination: ConnectionTerminationStatus?
-    @Published var networkReachabilityStatus: NetworkReachabilityStatus = .unknown
+    @Published var connectionTermination: ConnectionTerminationStatus? {
+        didSet {
+            guard oldValue != connectionTermination else { return }
+            synchronizeCarStatusSnapshot()
+        }
+    }
+    @Published var networkReachabilityStatus: NetworkReachabilityStatus = .unknown {
+        didSet {
+            guard oldValue != networkReachabilityStatus else { return }
+            synchronizeCarStatusSnapshot()
+        }
+    }
+    /// 最近一次真正收到当前 Host API 成功响应的时间。仅有 iPad 网络路径并不能证明
+    /// 目标 Mac、Tailscale 或 agentd 可达，因此 Widget 的在线判断必须同时依赖这份证据。
+    var carStatusLastSuccessfulHostObservationAt: Date?
     @Published var statusMessage: String?
     @Published var errorMessage: String?
     @Published var isRefreshingSelectedSession = false
@@ -96,9 +111,12 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
+    /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?
-    @Published var isRefreshingAccountTokenUsage = false
-    @Published var isAccountTokenUsageUnavailable = false
+    @Published var accountTokenActivity: AccountTokenActivityState = .idle
+    /// 只表示活动请求本身在飞。不能把配额刷新并进来，否则配额一刷新就会把
+    /// 活动的失败态和空态一起伪装成“正在加载”。
+    @Published var isRefreshingAccountTokenActivity = false
     // 使用量刷新跨设置页、个人页和侧栏共享，由 Store 按 runtime 去重。
     // 视图只观察自己的 provider，避免 Claude loading 禁用其他按钮，也避免
     // 页面关闭后由未结构化 Task 回写已销毁的局部 @State。
@@ -197,6 +215,7 @@ final class SessionStore: ObservableObject {
     let sessionReminderStore: SessionReminderStore
     let sessionReminderScheduler: any SessionReminderScheduling
     let sessionReminderNow: () -> Date
+    let carStatusSnapshotCoordinator: CarStatusSnapshotCoordinator
     let runtimeCompletionNotificationsEnabled: Bool
     let historySavingsNoticeStore: HistorySavingsNoticeStore
     let queuedTurnStore: any QueuedTurnPersisting
@@ -398,6 +417,9 @@ final class SessionStore: ObservableObject {
     var gitRefreshDelayNanoseconds: UInt64 = 600_000_000
     let economyHistoryPageLimit = 60
     let fullHistoryPageLimit = 20
+    // full 首屏被 gateway cap 阻断且已知量级时，从首屏 turn 数向下逐级缩页重试完整历史，
+    // 再回退缩略。顶端 10 必须与 CodexAppServerSessionRuntime.fullHistoryTurnPageLadderTop 一致。
+    let fullHistoryTurnPageLadder = [10, 5, 2, 1]
     let historyFirstPageCacheTTL: TimeInterval = 4
     let historyPolicyRetryFallbackNanoseconds: UInt64 = 15_000_000_000
     let historyPolicyRetryMaxNanoseconds: UInt64 = 20_000_000_000
@@ -415,6 +437,12 @@ final class SessionStore: ObservableObject {
     /// presentation 补页保持顺序且有界：最小批量避免 child 密集时退化成逐条 RPC，页数上限防止异常 cursor 请求风暴。
     static let minimumSessionPresentationFillPageLimit = 5
     static let maximumSessionPresentationFillPageCount = 12
+    /// 顶层会话常被 sub-agent child 稀释：首包仍保持 20 条小窗口，确认欠填后才按已观察到的
+    /// root/raw 密度估算补页。3/2 是对密度波动的安全余量，避免估得过紧又多走一次远程 RTT。
+    static let sessionPresentationFillEstimateSafetyNumerator = 3
+    static let sessionPresentationFillEstimateSafetyDenominator = 2
+    /// agentd Gateway 的 thread/list 协议硬上限是 50；客户端必须在发请求前守住同一边界。
+    static let maximumSessionPresentationFillRawPageLimit = 50
     /// 单批达到页数上限时从已提交 cursor 续跑；每 4 批主动让出执行权并短暂退避，避免高密度历史长期独占链路。
     static let sessionPresentationFillBatchCountPerBurst = 4
     static let sessionPresentationFillBurstBackoffNanoseconds: UInt64 = 250_000_000
@@ -436,6 +464,7 @@ final class SessionStore: ObservableObject {
         sessionHistoryReadStateStore: SessionHistoryReadStateStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
         sessionReminderStore: SessionReminderStore? = nil,
+        carStatusSnapshotCoordinator: CarStatusSnapshotCoordinator? = nil,
         historySavingsNoticeStore: HistorySavingsNoticeStore? = nil,
         queuedTurnStore: (any QueuedTurnPersisting)? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
@@ -551,6 +580,22 @@ final class SessionStore: ObservableObject {
             self.sessionReminderScheduler = UserNotificationSessionReminderScheduler()
         }
         self.sessionReminderNow = sessionReminderNow
+        if let carStatusSnapshotCoordinator {
+            self.carStatusSnapshotCoordinator = carStatusSnapshotCoordinator
+        } else if clientFactory != nil {
+            let namespace = UUID().uuidString
+            self.carStatusSnapshotCoordinator = CarStatusSnapshotCoordinator(
+                selectionDefaults: UserDefaults(
+                    suiteName: "SessionStore.CarStatus.Selection.\(namespace)"
+                ) ?? .standard,
+                sharedDefaults: UserDefaults(
+                    suiteName: "SessionStore.CarStatus.Shared.\(namespace)"
+                ),
+                reloadTimelines: {}
+            )
+        } else {
+            self.carStatusSnapshotCoordinator = CarStatusSnapshotCoordinator()
+        }
         // 审批和补充信息始终允许提醒；完成/失败属于高频日常事件，首版默认关闭。
         self.runtimeCompletionNotificationsEnabled = runtimeCompletionNotificationsEnabled
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }

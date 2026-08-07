@@ -4,12 +4,13 @@ options:
   # 与当前工程的 Xcode 27 元数据保持一致，避免每次 XcodeGen 把 scheme 降级到旧版本。
   xcodeVersion: "27.0"
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
 settings:
   base:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: 9HZ89R58PZ
-    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    # iOS 18–25 走普通材质与功能降级；iOS 26+ 继续启用 Liquid Glass 和新 Speech API。
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     SDKROOT: auto
 packages:
@@ -61,12 +62,19 @@ targets:
     dependencies:
       - package: swift-markdown
         product: Markdown
+      - target: MimiCarStatusWidgetExtension
+        embed: true
+        destinationFilters:
+          - iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi
         PRODUCT_NAME: MimiRemote
         PRODUCT_MODULE_NAME: MimiRemote
         INFOPLIST_FILE: Resources/Info.plist
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Resources/MimiRemote.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Resources/MimiRemote.entitlements
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_PROVISIONING_PROFILE_SPECIFIER)"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         "INFOPLIST_FILE[sdk=macosx*]": Resources/Info-Catalyst.plist
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Resources/MimiRemote-Catalyst.entitlements
@@ -80,9 +88,37 @@ targets:
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": "YES"
         # UI 文案统一由显式 L10n key 管理，关闭编译器自动提取，避免 Xcode 把技术字符串写回目录。
         SWIFT_EMIT_LOC_STRINGS: "NO"
-        # 1.0 已在 App Store Connect 关闭新构建上传，发布 1.1 时同步固定递增构建号。
+        # 1.1 已在 App Store Connect 关闭新构建上传，本次发布切换到 1.2 通道。
         CURRENT_PROJECT_VERSION: "100068"
-        MARKETING_VERSION: "1.1"
+        MARKETING_VERSION: "1.2"
+  MimiCarStatusWidgetExtension:
+    type: app-extension
+    platform: iOS
+    productName: MimiCarStatusWidget
+    sources:
+      - path: WidgetExtension
+        excludes:
+          - "*.entitlements"
+          - Info.plist
+      - path: Sources/Core/CarStatus/CarStatusSnapshot.swift
+        group: Sources/Core/CarStatus
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi.carstatuswidget
+        PRODUCT_NAME: MimiCarStatusWidget
+        INFOPLIST_FILE: WidgetExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: WidgetExtension/MimiCarStatusWidget.entitlements
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)"
+        SKIP_INSTALL: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CURRENT_PROJECT_VERSION: "100068"
+        MARKETING_VERSION: "1.2"
+        SWIFT_EMIT_LOC_STRINGS: "NO"
   MimiRemoteTests:
     type: bundle.unit-test
     platform: auto
@@ -93,7 +129,10 @@ targets:
       - path: Tests
         excludes:
           - MimiRemoteTests/ConversationSnapshotTests.swift
+          - MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
+          - MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
           - MimiRemoteTests/SkillModelPickerSnapshotTests.swift
+          - MimiRemoteTests/TokenUsageCardSnapshotTests.swift
           - MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
           # UI 测试只能由 MimiRemoteUITests Target 承载；否则普通单测会在没有
           # XCUIApplication 配置的环境里启动并崩溃。
@@ -103,6 +142,15 @@ targets:
         destinationFilters:
           - iOS
       - path: Tests/MimiRemoteTests/SkillModelPickerSnapshotTests.swift
+        destinationFilters:
+          - iOS
+      - path: Tests/MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
+        destinationFilters:
+          - iOS
+      - path: Tests/MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
+        destinationFilters:
+          - iOS
+      - path: Tests/MimiRemoteTests/TokenUsageCardSnapshotTests.swift
         destinationFilters:
           - iOS
       - path: Tests/MimiRemoteTests/WorkspaceVisualSnapshotTests.swift

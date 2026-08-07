@@ -1766,6 +1766,7 @@ struct ConversationActivityPayload: Codable, Hashable {
     let outputPreview: String?
     let outputDigest: UInt64?
     let outputByteCount: Int?
+    let historyOutputID: String?
     let commandPresentationKind: ConversationCommandPresentationKind?
     let toolPresentationKind: ConversationToolPresentationKind?
 
@@ -1782,6 +1783,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         case outputPreview = "output_preview"
         case outputDigest = "output_digest"
         case outputByteCount = "output_byte_count"
+        case historyOutputID = "history_output_id"
         case commandPresentationKind = "command_presentation_kind"
         case toolPresentationKind = "tool_presentation_kind"
     }
@@ -1799,6 +1801,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         outputPreview: String? = nil,
         outputDigest: UInt64? = nil,
         outputByteCount: Int? = nil,
+        historyOutputID: String? = nil,
         commandPresentationKind: ConversationCommandPresentationKind? = nil,
         toolPresentationKind: ConversationToolPresentationKind? = nil
     ) {
@@ -1814,6 +1817,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         self.outputPreview = outputPreview
         self.outputDigest = outputDigest
         self.outputByteCount = outputByteCount
+        self.historyOutputID = historyOutputID
         self.commandPresentationKind = commandPresentationKind
         self.toolPresentationKind = toolPresentationKind
     }
@@ -1832,6 +1836,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         outputPreview = try container.decodeIfPresent(String.self, forKey: .outputPreview)
         outputDigest = try container.decodeIfPresent(UInt64.self, forKey: .outputDigest)
         outputByteCount = try container.decodeIfPresent(Int.self, forKey: .outputByteCount)
+        historyOutputID = try container.decodeIfPresent(String.self, forKey: .historyOutputID)
         // 服务端未来增加枚举值时，旧客户端仍应能加载历史；未知值保守按执行类展示。
         if let rawKind = try container.decodeIfPresent(String.self, forKey: .commandPresentationKind) {
             commandPresentationKind = ConversationCommandPresentationKind(rawValue: rawKind) ?? .execution
@@ -1849,6 +1854,9 @@ struct ConversationActivityPayload: Codable, Hashable {
         guard let type = Self.firstString(in: item, keys: ["type"]) else {
             return nil
         }
+        let historyOutputID = Self.historyOutputID(from: item)
+        let historyOutputPreview = Self.firstString(in: item, keys: ["historyOutputPreview"])?.trimmedNonEmpty
+        let historyOutputByteCount = Self.firstInt(in: item, keys: ["historyOutputByteCount"])
         switch type {
         case "plan":
             guard let text = Self.firstString(in: item, keys: ["text"])?.trimmedNonEmpty else {
@@ -1870,8 +1878,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty
             let cwd = Self.firstString(in: item, keys: ["cwd"])?.trimmedNonEmpty
             let output = Self.firstString(in: item, keys: ["aggregatedOutput"])?.trimmedNonEmpty
-            let outputDigest = output.map(Self.stableDigest)
-            let outputByteCount = output?.utf8.count
+            let outputDigest = historyOutputID.map(Self.stableDigest) ?? output.map(Self.stableDigest)
+            let outputByteCount = historyOutputByteCount ?? output?.utf8.count
             self.init(
                 category: .runCommand,
                 displayTitle: actionTitle ?? L10n.format("ui.run_value", command),
@@ -1880,9 +1888,10 @@ struct ConversationActivityPayload: Codable, Hashable {
                 command: command,
                 cwd: cwd,
                 exitCode: Self.firstInt(in: item, keys: ["exitCode"]),
-                outputPreview: output.map { Self.truncatedText($0, limit: Self.outputPreviewLimit) },
+                outputPreview: (historyOutputPreview ?? output).map { Self.truncatedText($0, limit: Self.outputPreviewLimit) },
                 outputDigest: outputDigest,
                 outputByteCount: outputByteCount,
+                historyOutputID: historyOutputID,
                 commandPresentationKind: Self.commandPresentationKind(from: commandActions)
             )
 
@@ -1892,7 +1901,17 @@ struct ConversationActivityPayload: Codable, Hashable {
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty ?? "modified"
             let summary = filePaths.first.map(Self.shortPath) ?? L10n.text("ui.workspace")
             let title = filePaths.count > 1 ? L10n.plural("ui.files_modified_count", count: filePaths.count) : L10n.format("ui.modify_value", summary)
-            self.init(category: .editFile, displayTitle: title, subtitle: status, status: status, filePaths: filePaths)
+            self.init(
+                category: .editFile,
+                displayTitle: title,
+                subtitle: status,
+                status: status,
+                filePaths: filePaths,
+                outputPreview: historyOutputPreview,
+                outputDigest: historyOutputID.map(Self.stableDigest),
+                outputByteCount: historyOutputByteCount,
+                historyOutputID: historyOutputID
+            )
 
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
             let identifier = Self.toolIdentifier(from: item, type: type)
@@ -1904,6 +1923,10 @@ struct ConversationActivityPayload: Codable, Hashable {
                 subtitle: presentation.subtitle,
                 status: status,
                 toolName: identifier,
+                outputPreview: historyOutputPreview,
+                outputDigest: historyOutputID.map(Self.stableDigest),
+                outputByteCount: historyOutputByteCount,
+                historyOutputID: historyOutputID,
                 toolPresentationKind: presentation.kind
             )
 
@@ -2054,6 +2077,7 @@ struct ConversationActivityPayload: Codable, Hashable {
             && lhs.exitCode == rhs.exitCode
             && lhs.outputDigest == rhs.outputDigest
             && lhs.outputByteCount == rhs.outputByteCount
+            && lhs.historyOutputID == rhs.historyOutputID
             && lhs.commandPresentationKind == rhs.commandPresentationKind
             && lhs.toolPresentationKind == rhs.toolPresentationKind
     }
@@ -2070,6 +2094,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         hasher.combine(exitCode)
         hasher.combine(outputDigest)
         hasher.combine(outputByteCount)
+        hasher.combine(historyOutputID)
         hasher.combine(commandPresentationKind)
         hasher.combine(toolPresentationKind)
     }
@@ -2117,6 +2142,23 @@ struct ConversationActivityPayload: Codable, Hashable {
     }
 
     private static let outputPreviewLimit = 1_000
+
+    private static func historyOutputID(from item: [String: CodexAppServerJSONValue]) -> String? {
+        let prefix = "agentd-history-output://"
+        guard let reference = firstString(in: item, keys: ["historyOutputRef"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+              reference.hasPrefix(prefix) else {
+            return nil
+        }
+        let id = String(reference.dropFirst(prefix.count))
+        guard !id.isEmpty,
+              id.utf8.count <= 256,
+              !id.contains("/"),
+              !id.contains("?"),
+              !id.contains("#") else {
+            return nil
+        }
+        return id
+    }
 
     private static func reasoningText(from item: [String: CodexAppServerJSONValue]) -> String {
         let summary = item["summary"]?.arrayValue?

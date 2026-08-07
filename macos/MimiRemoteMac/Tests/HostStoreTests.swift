@@ -4,6 +4,145 @@ import XCTest
 
 @MainActor
 final class HostStoreTests: XCTestCase {
+    func testBootstrapRegistersBundledAgentWhenServiceRecordIsNotFound() async {
+        let events = EventRecorder()
+        var registrationState = ServiceRegistrationState.notFound
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["register-mac"])
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testBootstrapReportsMissingBundledConfigurationWithoutRegistering() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .notFound },
+            agentConfigurationError: { "App 包内缺少 LaunchAgent 配置，请重新安装正式版本。" },
+            registerAgent: { events.append("register-mac") }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [])
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(
+            store.lifecycle,
+            .failed("App 包内缺少 LaunchAgent 配置，请重新安装正式版本。")
+        )
+    }
+
+    func testPartialRegistrationFailureTriggersOneBoundedReregistration() async {
+        let events = EventRecorder()
+        var registrationState = ServiceRegistrationState.notRegistered
+        var registrationAttempts = 0
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            registerAgent: {
+                registrationAttempts += 1
+                events.append("register-\(registrationAttempts)")
+                registrationState = .enabled
+                if registrationAttempts == 1 {
+                    throw TestError.expected
+                }
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["register-1", "unregister-mac", "register-2"])
+        XCTAssertEqual(registrationAttempts, 2)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testEnabledAgentStatusFailureTriggersOneBoundedReregistration() async {
+        let events = EventRecorder()
+        let statusEvents = EventRecorder()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                statusEvents.append("status")
+                if statusEvents.values.count == 1 {
+                    throw TestError.expected
+                }
+                return Self.readyStatus
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-mac", "register-mac"])
+        XCTAssertEqual(statusEvents.values, ["status", "status"])
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testAgentConfigurationValidatorChecksPlistAndExecutable() throws {
+        let fileManager = FileManager.default
+        let bundleURL = fileManager.temporaryDirectory
+            .appending(path: "mimi-agent-bundle-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? fileManager.removeItem(at: bundleURL) }
+
+        XCTAssertTrue(
+            ServiceManagementClient.validateAgentConfiguration(bundleURL: bundleURL)?
+                .contains("缺少 LaunchAgent 配置") == true
+        )
+
+        let launchAgentsURL = bundleURL.appending(
+            path: "Contents/Library/LaunchAgents",
+            directoryHint: .isDirectory
+        )
+        let resourcesURL = bundleURL.appending(path: "Contents/Resources", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: launchAgentsURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+
+        let propertyList: [String: Any] = [
+            "Label": "com.gaixianggeng.mimi.mac.agentd",
+            "BundleProgram": "Contents/Resources/agentd",
+        ]
+        let propertyListData = try PropertyListSerialization.data(
+            fromPropertyList: propertyList,
+            format: .xml,
+            options: 0
+        )
+        try propertyListData.write(
+            to: launchAgentsURL.appending(path: "com.gaixianggeng.mimi.mac.agentd.plist")
+        )
+
+        let executableURL = resourcesURL.appending(path: "agentd")
+        try Data().write(to: executableURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+
+        XCTAssertNil(ServiceManagementClient.validateAgentConfiguration(bundleURL: bundleURL))
+    }
+
     func testBootstrapRequiresSetupWhenConfigIsMissing() async {
         let store = makeStore(configExists: false)
 
@@ -563,6 +702,7 @@ final class HostStoreTests: XCTestCase {
         configExists: Bool,
         homebrewLoaded: Bool = false,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
+        agentConfigurationError: @escaping @MainActor () -> String? = { nil },
         isAgentRegistrationCurrent: @escaping @MainActor () -> Bool = { true },
         markAgentRegistrationCurrent: @escaping @MainActor () -> Void = {},
         status: @escaping @Sendable () async throws -> AgentStatus = {
@@ -605,6 +745,7 @@ final class HostStoreTests: XCTestCase {
         )
         let services = ServiceManagementClient(
             agentStatus: agentStatus,
+            agentConfigurationError: agentConfigurationError,
             isAgentRegistrationCurrent: isAgentRegistrationCurrent,
             markAgentRegistrationCurrent: markAgentRegistrationCurrent,
             registerAgent: registerAgent,

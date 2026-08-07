@@ -144,7 +144,7 @@ actor CodexAppServerSessionRuntime {
     var rateLimitRefreshTask: Task<RateLimitSummary?, Never>?
     var lastRateLimitRefreshAt: Date?
     var accountTokenUsage: AccountTokenUsageSnapshot?
-    var accountTokenUsageRefreshTask: Task<AccountTokenUsageSnapshot?, Never>?
+    var accountTokenUsageRefreshTask: Task<AccountTokenUsageFetch, Never>?
     // 正在 startTurn 中的 thread：turn/start 请求挂起期间，actor 会重入处理 server-request，
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
@@ -518,6 +518,11 @@ actor CodexAppServerSessionRuntime {
     func readHistoryMedia(id: String) async throws -> FileReadResponse {
         // 历史媒体是 gateway 脱水后生成的短期缓存，只在用户点按历史图片占位时读取。
         try await AgentAPIClient(endpoint: endpoint, token: token).readHistoryMedia(id: id)
+    }
+
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        // 命令/MCP/diff 大输出不走 WebSocket 首屏；用户明确打开时再走鉴权 REST。
+        try await AgentAPIClient(endpoint: endpoint, token: token).readHistoryOutput(id: id)
     }
 
     func commandActions(path: String) async throws -> [AgentCommandAction] {
@@ -1266,7 +1271,12 @@ actor CodexAppServerSessionRuntime {
                     limit: limit,
                     cursor: cursor,
                     useStateDBOnly: canUseIndexedList,
-                    sortKey: sortKey
+                    sortKey: sortKey,
+                    refreshHistory: Self.shouldRefreshHistory(
+                        runtimeProvider: runtimeProvider,
+                        consistency: consistency,
+                        cursor: cursor
+                    )
                 ),
                 timeout: longRunningRequestTimeout
             )
@@ -1334,6 +1344,18 @@ actor CodexAppServerSessionRuntime {
         return threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
     }
 
+    /// Claude 的目录扫描只能由用户主动发起的权威首屏触发；其余请求保持索引/分页语义，
+    /// 避免翻页或兼容性回退把全量 JSONL 扫描变成无界后台工作。
+    static func shouldRefreshHistory(
+        runtimeProvider: String,
+        consistency: SessionListConsistency,
+        cursor: String?
+    ) -> Bool {
+        normalizedRuntimeProvider(runtimeProvider) == "claude"
+            && consistency == .authoritative
+            && cursor == nil
+    }
+
     func indexedThreadListNeedsRepair(_ page: SessionsPage, cwd: String) -> Bool {
         let knownSessions = contextsBySessionID.values.compactMap { context in
             context.cwd == cwd ? context.session : nil
@@ -1397,6 +1419,10 @@ actor CodexAppServerSessionRuntime {
             || message.contains("experimentalapi")
     }
 
+    // full 首屏默认 10 turn；SessionStore 在 history_response_too_large 后按此上限向下
+    // 逐级缩页（10→5→2→1，见 SessionStore.fullHistoryTurnPageLadder）。两处必须保持一致。
+    static let fullHistoryTurnPageLadderTop = 10
+
     static func threadTurnPageLimit(forMessageLimit limit: Int?, loadMode: HistoryMessagesPage.LoadMode) -> Int {
         let requestedMessages = max(1, limit ?? 120)
         switch loadMode {
@@ -1405,6 +1431,13 @@ actor CodexAppServerSessionRuntime {
             // 控制 turn 页大小，比降低 WebSocket message size 更温和，不会制造重连风暴。
             return max(5, min(20, (requestedMessages + 3) / 4))
         case .full:
+            // 自适应缩页：SessionStore 缩页时直接传入目标 turn 数（均 ≤ 首屏 10），
+            // 这些小 limit 按精确 turn 数请求，便于命中 gateway full cap 以下；默认首屏
+            // (limit=20) 与翻页(limit=20) 等较大 message limit 仍走原有 message→turn 折算，
+            // 结果 10 turn，既是首屏也是 ladder 顶端。
+            if requestedMessages <= fullHistoryTurnPageLadderTop {
+                return max(1, requestedMessages)
+            }
             // full 手动加载仍要服从 Go gateway 的硬上限，避免弱网下大响应被 50 limit 拒绝。
             return max(10, min(50, (requestedMessages + 1) / 2))
         }

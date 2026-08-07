@@ -48,6 +48,81 @@ struct AccountTokenUsageSnapshot: Hashable {
     let dailyUsageBuckets: [AccountTokenUsageDailyBucket]?
 }
 
+/// 一次账号用量请求的结果。客户端层过去用 `AccountTokenUsageSnapshot?` 表达，
+/// 于是「这台主机没有该能力」和「请求失败了」都塌成 nil，上层永远无法区分。
+enum AccountTokenUsageFetch: Equatable {
+    case snapshot(AccountTokenUsageSnapshot)
+    /// 这条链路本来就不提供账号用量（非 Codex runtime、方法不在 allowlist）。
+    case unsupported
+    /// 请求发出去了但失败或无法解析。是否回退到旧数据由展示层决定，不在这里静默兜底。
+    case failed
+}
+
+/// Token 活动的状态机。原先由 `isRefreshingAccountTokenUsage` 和
+/// `isAccountTokenUsageUnavailable` 两个 Bool 表达，既区分不出「主机不返回日粒度历史」
+/// 「账号还没有活动」和「这次请求失败」，也说不清手上的网格是不是旧数据。
+enum AccountTokenActivityState: Equatable {
+    /// 还没有发起过请求。
+    case idle
+    /// 首次加载，手上没有任何可显示的历史。
+    case loading
+    case loaded(buckets: [AccountTokenUsageDailyBucket], asOf: Date)
+    /// 接口可用，但该账号当前没有活动记录。
+    case empty(asOf: Date)
+    /// 当前账号或 app-server 版本不提供日粒度历史。
+    case unsupported
+    /// 请求失败。`previous` 是上一次成功的结果，展示层据此决定画旧网格还是纯错误态。
+    case failed(previous: Previous?)
+
+    struct Previous: Equatable {
+        let buckets: [AccountTokenUsageDailyBucket]
+        let asOf: Date
+    }
+
+    /// 按服务端语义归一：nil 代表不提供历史，空数组代表提供但当前没有活动。
+    static func resolved(
+        buckets: [AccountTokenUsageDailyBucket]?,
+        asOf: Date
+    ) -> AccountTokenActivityState {
+        guard let buckets else { return .unsupported }
+        return buckets.isEmpty ? .empty(asOf: asOf) : .loaded(buckets: buckets, asOf: asOf)
+    }
+
+    /// 可以画成点格图的数据；失败时回落到上一次成功的结果。
+    var displayBuckets: [AccountTokenUsageDailyBucket]? {
+        switch self {
+        case .loaded(let buckets, _):
+            return buckets
+        case .empty:
+            return []
+        case .failed(let previous):
+            return previous?.buckets
+        case .idle, .loading, .unsupported:
+            return nil
+        }
+    }
+
+    /// 最近一次成功的结果，用于失败时保留旧网格并标注时间。
+    var lastSuccessful: Previous? {
+        switch self {
+        case .loaded(let buckets, let asOf):
+            return Previous(buckets: buckets, asOf: asOf)
+        case .empty(let asOf):
+            return Previous(buckets: [], asOf: asOf)
+        case .failed(let previous):
+            return previous
+        case .idle, .loading, .unsupported:
+            return nil
+        }
+    }
+
+    /// 网格画的是上一次成功的数据，而不是这一次的结果。
+    var isShowingStaleData: Bool {
+        guard case .failed(let previous) = self else { return false }
+        return previous != nil
+    }
+}
+
 // 展示模型与 runtime 模型共享同一空白归一化规则，保持 module-internal。
 extension String {
     var trimmedNonEmpty: String? {

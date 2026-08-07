@@ -19,6 +19,8 @@ enum ModelReasoningGridMetrics {
     static let modelRowHeight: CGFloat = 52
     static let modelLabelWidth: CGFloat = 112
     static let gridSpacing: CGFloat = 8
+    static let fastModeHitTarget: CGFloat = 44
+    static let fastModeVisualDiameter: CGFloat = 36
 
     static func standardContentHeight(modelRowCount: Int) -> CGFloat {
         let visibleRowCount = max(modelRowCount, 0)
@@ -421,7 +423,7 @@ private struct ModelReasoningPickerHeader: View {
                 HStack(spacing: 4) {
                     allModelsMenu(isCompact: true)
                     if layout.showsFastMode {
-                        fastModeToggle(isCompact: true)
+                        fastModeToggle()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -430,7 +432,7 @@ private struct ModelReasoningPickerHeader: View {
                     allModelsMenu(isCompact: false)
                     if layout.showsFastMode {
                         Spacer(minLength: 8)
-                        fastModeToggle(isCompact: false)
+                        fastModeToggle()
                     }
                 }
             }
@@ -492,45 +494,34 @@ private struct ModelReasoningPickerHeader: View {
         .accessibilityLabel(L10n.text("ui.all_models"))
     }
 
-    private func fastModeToggle(isCompact: Bool) -> some View {
+    private func fastModeToggle() -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let fastTitle = L10n.text("ui.fast")
         let fastImage = isFastMode ? "bolt.fill" : "bolt"
         return Toggle(isOn: fastModeBinding) {
-            Group {
-                if isCompact {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 3) {
-                            Image(systemName: fastImage)
-                            Text(fastTitle)
-                        }
-                        Text(fastTitle)
-                        Image(systemName: fastImage)
-                    }
-                } else {
-                    HStack(spacing: 5) {
-                        Image(systemName: fastImage)
-                        Text(fastTitle)
-                    }
-                }
+            ZStack {
+                Circle()
+                    .fill(isFastMode ? tokens.accent : tokens.elevatedSurface.opacity(0.72))
+
+                Image(systemName: fastImage)
+                    .font(themeStore.uiFont(size: 14, weight: .semibold))
+                    .foregroundStyle(isFastMode ? Color.white : tokens.accent)
             }
-            .lineLimit(1)
-            .font(themeStore.uiFont(.caption, weight: .semibold))
-            .foregroundStyle(isFastMode ? Color.white : tokens.accent)
-            .padding(.horizontal, isCompact ? 0 : 11)
-            .frame(width: isCompact ? 44 : nil)
-            .frame(minHeight: 44)
-            .background(
-                isFastMode ? tokens.accent : tokens.elevatedSurface.opacity(0.72),
-                in: Capsule()
+            .frame(
+                width: ModelReasoningGridMetrics.fastModeVisualDiameter,
+                height: ModelReasoningGridMetrics.fastModeVisualDiameter
             )
             .overlay {
-                Capsule()
+                Circle()
                     .strokeBorder(
                         isFastMode ? tokens.accent.opacity(0.88) : tokens.border.opacity(0.58),
                         lineWidth: 0.75
                     )
             }
+            // 可见控制面收敛为 36pt 圆形，但外层仍保留完整 44pt 触控区域。
+            .frame(
+                width: ModelReasoningGridMetrics.fastModeHitTarget,
+                height: ModelReasoningGridMetrics.fastModeHitTarget
+            )
             .contentShape(Rectangle())
         }
         .toggleStyle(.button)

@@ -199,10 +199,21 @@ check_secret IOS_KEYCHAIN_PASSWORD
 if [[ -z "${IOS_PROVISIONING_PROFILE_PATH:-}" && -z "${IOS_PROVISIONING_PROFILE_ID:-}" && -z "${IOS_PROVISIONING_PROFILE_NAME:-}" ]]; then
   fail "provide IOS_PROVISIONING_PROFILE_PATH, IOS_PROVISIONING_PROFILE_ID or IOS_PROVISIONING_PROFILE_NAME"
 fi
+if [[ -z "${IOS_WIDGET_PROVISIONING_PROFILE_PATH:-}" && -z "${IOS_WIDGET_PROVISIONING_PROFILE_ID:-}" && -z "${IOS_WIDGET_PROVISIONING_PROFILE_NAME:-}" ]]; then
+  fail "provide IOS_WIDGET_PROVISIONING_PROFILE_PATH, IOS_WIDGET_PROVISIONING_PROFILE_ID or IOS_WIDGET_PROVISIONING_PROFILE_NAME"
+fi
 
 for command in git security ruby plutil xcodebuild xcrun codesign tee caffeinate; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
+
+asc_build_number_mode="${IOS_ASC_BUILD_NUMBER_MODE:-off}"
+case "$asc_build_number_mode" in
+  off|shadow|enforce) ;;
+  *)
+    fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce"
+    ;;
+esac
 
 required_branch="${IOS_RELEASE_REQUIRED_BRANCH:-}"
 if [[ -n "$required_branch" ]]; then
@@ -226,11 +237,6 @@ if [[ -z "${TESTFLIGHT_WHATS_NEW:-}" ]]; then
 fi
 export TESTFLIGHT_WHATS_NEW
 
-if [[ "$LOCAL_RELEASE_MODE" == "check" ]]; then
-  echo "ios-testflight-local check ok: project=$IOS_RELEASE_PROJECT_ID commit=$release_commit"
-  exit 0
-fi
-
 temp_base="${TMPDIR:-/tmp}"
 temp_base="${temp_base%/}"
 lock_dir="$temp_base/ios-testflight-local-$IOS_RELEASE_PROJECT_ID.lock"
@@ -244,6 +250,10 @@ profile=""
 profile_plist=""
 installed_profile=""
 profile_backup=""
+widget_profile=""
+widget_profile_plist=""
+installed_widget_profile=""
+widget_profile_backup=""
 worktree_added=0
 
 cleanup() {
@@ -269,6 +279,13 @@ cleanup() {
       cp "$profile_backup" "$installed_profile" >/dev/null 2>&1 || true
     else
       rm -f "$installed_profile"
+    fi
+  fi
+  if [[ -n "$installed_widget_profile" ]]; then
+    if [[ -n "$widget_profile_backup" && -f "$widget_profile_backup" ]]; then
+      cp "$widget_profile_backup" "$installed_widget_profile" >/dev/null 2>&1 || true
+    else
+      rm -f "$installed_widget_profile"
     fi
   fi
 
@@ -303,6 +320,8 @@ original_keychains="$work_dir/original-keychains.txt"
 keychain="$work_dir/signing.keychain-db"
 profile="$work_dir/app-store.mobileprovision"
 profile_plist="$work_dir/profile.plist"
+widget_profile="$work_dir/widget-app-store.mobileprovision"
+widget_profile_plist="$work_dir/widget-profile.plist"
 log_dir="${IOS_RELEASE_LOG_DIR:-$HOME/Library/Logs/ios-testflight-local/$IOS_RELEASE_PROJECT_ID}"
 state_dir="${IOS_RELEASE_STATE_DIR:-$HOME/Library/Application Support/ios-testflight-local/$IOS_RELEASE_PROJECT_ID}"
 mkdir -p "$log_dir" "$state_dir" "$runner_temp"
@@ -317,6 +336,26 @@ git -C "$REPO_ROOT" worktree add --detach --quiet "$source_dir" "$release_commit
 worktree_added=1
 entrypoint="$source_dir/$IOS_RELEASE_ENTRYPOINT"
 [[ -f "$entrypoint" ]] || fail "release entrypoint not found in ref: $IOS_RELEASE_ENTRYPOINT"
+
+# 必须从 release commit 的隔离 worktree 执行，避免 --ref 与当前 checkout
+# 不一致时误用当前分支或未提交改动中的 asc 版本与校验和。
+case "$asc_build_number_mode" in
+  off) ;;
+  shadow|enforce)
+    if asc_check="$(bash "$source_dir/scripts/ios_asc_cli.sh" check)"; then
+      printf '%s\n' "$asc_check"
+    elif [[ "$asc_build_number_mode" == "enforce" ]]; then
+      fail "pinned asc CLI check failed"
+    else
+      echo "ios-testflight-local: warning: pinned asc CLI check failed; shadow comparison will be skipped if unavailable" >&2
+    fi
+    ;;
+esac
+
+if [[ "$LOCAL_RELEASE_MODE" == "check" ]]; then
+  echo "ios-testflight-local check ok: project=$IOS_RELEASE_PROJECT_ID commit=$release_commit"
+  exit 0
+fi
 
 if [[ -n "${IOS_PROVISIONING_PROFILE_PATH:-}" ]]; then
   [[ -f "$IOS_PROVISIONING_PROFILE_PATH" ]] || fail "provisioning profile not found: $IOS_PROVISIONING_PROFILE_PATH"
@@ -354,6 +393,48 @@ if [[ -f "$installed_profile" ]]; then
   cp "$installed_profile" "$profile_backup"
 fi
 cp "$profile" "$installed_profile"
+
+if [[ -n "${IOS_WIDGET_PROVISIONING_PROFILE_PATH:-}" ]]; then
+  [[ -f "$IOS_WIDGET_PROVISIONING_PROFILE_PATH" ]] || fail "widget provisioning profile not found: $IOS_WIDGET_PROVISIONING_PROFILE_PATH"
+  cp "$IOS_WIDGET_PROVISIONING_PROFILE_PATH" "$widget_profile"
+else
+  widget_profile_args=()
+  if [[ -n "${IOS_WIDGET_PROVISIONING_PROFILE_ID:-}" ]]; then
+    widget_profile_args=(--profile-id "$IOS_WIDGET_PROVISIONING_PROFILE_ID")
+  else
+    widget_profile_args=(--profile-name "$IOS_WIDGET_PROVISIONING_PROFILE_NAME")
+  fi
+  ruby "$SCRIPT_DIR/ios_asc_download_profile.rb" "${widget_profile_args[@]}" --output "$widget_profile"
+fi
+chmod 600 "$widget_profile"
+
+security cms -D -i "$widget_profile" > "$widget_profile_plist"
+widget_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$widget_profile_plist")"
+widget_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$widget_profile_plist")"
+widget_profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$widget_profile_plist")"
+widget_profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$widget_profile_plist")"
+widget_profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$widget_profile_plist")"
+widget_bundle_id="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswidget}"
+[[ "$widget_profile_team" == "$DEVELOPMENT_TEAM" ]] || fail "widget provisioning profile team mismatch"
+[[ "$widget_profile_app_id" == "$DEVELOPMENT_TEAM.$widget_bundle_id" ]] || fail "widget provisioning profile bundle id mismatch"
+if [[ -n "${IOS_WIDGET_EXPECTED_PROVISIONING_PROFILE_NAME:-}" ]]; then
+  [[ "$widget_profile_name" == "$IOS_WIDGET_EXPECTED_PROVISIONING_PROFILE_NAME" ]] || fail "unexpected widget provisioning profile: $widget_profile_name"
+fi
+ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$widget_profile_expiration" \
+  || fail "widget provisioning profile is expired"
+
+for entitlement_plist in "$profile_plist" "$widget_profile_plist"; do
+  profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$entitlement_plist" 2>/dev/null || true)"
+  [[ "$profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]] \
+    || fail "provisioning profile missing group.com.gaixianggeng.mimi App Group"
+done
+
+installed_widget_profile="$profiles_dir/$widget_profile_uuid.mobileprovision"
+if [[ -f "$installed_widget_profile" ]]; then
+  widget_profile_backup="$work_dir/installed-widget-profile.backup"
+  cp "$installed_widget_profile" "$widget_profile_backup"
+fi
+cp "$widget_profile" "$installed_widget_profile"
 
 distribution_password="$(read_secret IOS_DISTRIBUTION_CERTIFICATE_PASSWORD)"
 keychain_password="$(read_secret IOS_KEYCHAIN_PASSWORD)"
@@ -400,6 +481,7 @@ export IOS_SIGNING_STYLE=manual
 export IOS_SIGNING_KEYCHAIN_PATH="$keychain"
 export IOS_CODE_SIGN_IDENTITY="$signing_identity"
 export IOS_PROVISIONING_PROFILE_SPECIFIER="$profile_name"
+export IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER="$widget_profile_name"
 if [[ "$LOCAL_RELEASE_MODE" == "upload" ]]; then
   export IOS_TESTFLIGHT_UPLOAD=1
   export IOS_TESTFLIGHT_VALIDATE=0

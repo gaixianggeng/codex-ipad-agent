@@ -1,5 +1,82 @@
 import SwiftUI
 
+enum AppDestination: Hashable {
+    case sessions
+    case workspaces
+    case me
+    case session(SessionID)
+    case subagent(parentID: SessionID, childID: SessionID)
+}
+
+/// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
+/// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
+@MainActor
+final class WorkbenchNavigationBindingScheduler {
+    enum Lane: Hashable {
+        case splitSelection
+        case compactTab
+        case compactSessionsPath
+        case compactWorkspacesPath
+    }
+
+    private var revisions: [Lane: UInt] = [:]
+
+    func schedule(
+        on lane: Lane,
+        action: @escaping @MainActor () -> Void
+    ) {
+        let revision = revisions[lane, default: 0] &+ 1
+        revisions[lane] = revision
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.revisions[lane] == revision else {
+                return
+            }
+            self.revisions[lane] = nil
+            action()
+        }
+    }
+}
+
+enum CompactWorkbenchTab: Hashable {
+    case sessions
+    case workspaces
+    case me
+
+    var title: String {
+        switch self {
+        case .sessions: return L10n.text("ui.session")
+        case .workspaces: return L10n.text("ui.workspace")
+        case .me: return L10n.text("ui.me")
+        }
+    }
+
+    var systemImage: String {
+        navigationIcon.normalSystemName
+    }
+
+    var navigationIcon: WorkbenchNavigationIcon {
+        switch self {
+        case .sessions: return .sessions
+        case .workspaces: return .workspaces
+        case .me: return .me
+        }
+    }
+}
+
+enum WorkbenchNavigationEffect: Equatable {
+    case returnToSessionList
+    case selectSession(SessionID)
+}
+
+enum WorkbenchNavigationEvent: Equatable {
+    case open(AppDestination, source: WorkbenchRootPage?)
+    case synchronize(WorkbenchRestorationRoute)
+    case selectionCommitted(SessionSelectionCommit)
+    case compactPathChanged(tab: CompactWorkbenchTab, path: [AppDestination])
+    case compactTabChanged(CompactWorkbenchTab)
+    case sessionSelectionFinished(SessionID)
+}
+
 /// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
 /// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
 struct WorkbenchNavigationState: Equatable {
@@ -50,6 +127,15 @@ struct WorkbenchNavigationState: Equatable {
             return nil
         }
         return sessionID
+    }
+
+    /// 宽屏详情不是一次 push，系统不会自动提供返回工作区的按钮；紧凑布局由外层
+    /// `NavigationStack` 管理 path，保留系统返回即可，避免顶栏出现两个返回控件。
+    func showsWorkspaceBackButton(usesCompactNavigation: Bool) -> Bool {
+        guard !usesCompactNavigation, route.detailSessionID != nil else {
+            return false
+        }
+        return route.rootPage == .workspaces
     }
 
     @discardableResult
@@ -445,8 +531,11 @@ extension View {
     func themedWorkbenchNavigationChrome(tokens: ThemeTokens, colorScheme: ColorScheme) -> some View {
         // 会话工作台嵌在 NavigationSplitView 里，系统导航栏默认会透出平台背景。
         // 这里统一让导航栏和状态栏区域吃主题色，避免 iPad 横屏顶部出现黑色断层。
+        //
+        // 但底色只在滚动到边缘时才该出现：强制 `.visible` 会钉死一条不透明实色条和一道发丝线，
+        // 同时把顶栏按钮压成贴在实色上的图标。这里改为把主题色交给 scroll edge effect，
+        // 让系统自己决定何时显形。
         toolbarBackground(tokens.background, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(colorScheme, for: .navigationBar)
     }
 }
@@ -474,6 +563,7 @@ struct WorkbenchLayout: Equatable {
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
     let usesFloatingSidebarSurface: Bool
+    let prefersSessionTableDensity: Bool
 
     var usesSheetInspectorNavigation: Bool {
         !usesCompactNavigation && !usesAttachedInspector
@@ -516,6 +606,9 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        // iPad mini 竖屏虽然会退成单列导航，但 744/768pt 仍足以承载与横屏
+        // 收起侧栏后一致的会话表格；只有真正窄的分屏 / Slide Over 才回退 compact。
+        prefersSessionTableDensity = isPad && containerWidth >= 700
     }
 }
 
@@ -550,6 +643,48 @@ struct WorkbenchChromeIcon: View {
                 width: WorkbenchChromeIconMetrics.symbolFrame,
                 height: WorkbenchChromeIconMetrics.symbolFrame
             )
+    }
+}
+
+/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂：只有模糊和一层薄色，没有 Liquid Glass
+/// 的高光边缘与折射。同一套材质覆盖所有 chrome，避免一屏出现两种玻璃浓度。
+/// Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
+struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
+    let shape: ChromeShape
+    let tokens: ThemeTokens
+    var isTinted: Bool = false
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ZStack {
+            if reduceTransparency {
+                shape.fill(tokens.elevatedSurface)
+            } else {
+                shape.fill(.regularMaterial)
+            }
+
+            if isTinted {
+                // 选中态用中性提亮而不是主题紫填充：这一屏已经有 Codex 和 Claude
+                // 两个无法控制的品牌色，再加一块大面积主题色就是三种颜色互相抢。
+                // 选中由亮度 + 字重 + 是否展开名称共同表达，不需要色相参与。
+                shape.fill(tokens.primaryText.opacity(reduceTransparency ? 0.14 : 0.10))
+            }
+        }
+    }
+}
+
+extension View {
+    /// 顶栏图标按钮统一成 44pt 磨砂圆。调用方仍需在 ToolbarItem 上加
+    /// `.sharedBackgroundVisibility(.hidden)`，否则 iPadOS/iOS 26 自动附加的玻璃底板
+    /// 会叠在这层磨砂下面，形成两层背景。
+    func workbenchChromeCircle(tokens: ThemeTokens) -> some View {
+        frame(
+            width: WorkbenchChromeIconMetrics.minimumHitTarget,
+            height: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
+        .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
+        .contentShape(Circle())
     }
 }
 
@@ -604,11 +739,18 @@ struct WorkbenchSidebarContainer<
             content
                 .background(tokens.sidebarBackground.ignoresSafeArea())
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        toolbarHeader
+                    if #available(iOS 26.0, *) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            toolbarHeader
+                        }
+                        // 品牌标题不是独立按钮；隐藏 iPadOS 26 自动添加的共享玻璃底板。
+                        .sharedBackgroundVisibility(.hidden)
+                    } else {
+                        // iOS 18–25 没有系统共享玻璃底板，保留普通 ToolbarItem 即可。
+                        ToolbarItem(placement: .topBarLeading) {
+                            toolbarHeader
+                        }
                     }
-                    // 品牌标题不是独立按钮；隐藏 iPadOS 26 自动添加的共享玻璃底板。
-                    .sharedBackgroundVisibility(.hidden)
                 }
         }
     }
@@ -680,20 +822,27 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
 
     @ViewBuilder
     var body: some View {
-        if reduceTransparency {
-            button
-                .buttonStyle(.plain)
-                .background(tokens.elevatedSurface, in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border, lineWidth: 1)
-                }
-        } else {
+        if #available(iOS 26.0, *), !reduceTransparency {
             button
                 .buttonStyle(.plain)
                 // 把原生交互玻璃直接作用在确定的 44pt 标签上，避免系统 ButtonStyle
                 // 根据紧凑图标再次缩小或放大圆面；按压和指针反馈仍由 Liquid Glass 提供。
                 .glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            button
+                .buttonStyle(.plain)
+                .background {
+                    if reduceTransparency {
+                        Circle().fill(tokens.elevatedSurface)
+                    } else {
+                        // iOS 18–25 使用稳定的系统材质，不模拟 Liquid Glass 的折射与高光。
+                        Circle().fill(.regularMaterial)
+                    }
+                }
+                .overlay {
+                    Circle()
+                        .stroke(tokens.border, lineWidth: 1)
+                }
         }
     }
 
@@ -709,6 +858,19 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
         .foregroundStyle(tokens.primaryText)
         // 与触控、指针和 VoiceOver 共用同一个 action，不新增第二套 visibility 状态。
         .keyboardShortcut("s", modifiers: [.control, .command])
+    }
+}
+
+extension View {
+    /// 主操作在 iOS 26+ 使用原生突出玻璃；旧系统回退到系统强调按钮，
+    /// 只降低材质表现，不改变按钮的 action、禁用态、键盘快捷键或无障碍语义。
+    @ViewBuilder
+    func workbenchProminentActionStyle() -> some View {
+        if #available(iOS 26.0, *) {
+            buttonStyle(.glassProminent)
+        } else {
+            buttonStyle(.borderedProminent)
+        }
     }
 }
 

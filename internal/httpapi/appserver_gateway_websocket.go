@@ -94,6 +94,14 @@ func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *w
 			}
 			continue
 		}
+		if cachedPayload, ok := policy.cachedAccountTokenUsageResponse(payload, time.Now()); ok {
+			writeStart := time.Now()
+			if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, cachedPayload); err != nil {
+				return gatewayCloseReason("client_cache_write", err)
+			}
+			monitor.recordForward("upstream_to_client", len(cachedPayload), len(cachedPayload), policyDuration, time.Since(writeStart), cachedPayload)
+			continue
+		}
 		requestID := monitor.beginRPCRequest(forwardPayload, len(forwardPayload))
 		writeStart := time.Now()
 		if err := writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload); err != nil {

@@ -50,6 +50,16 @@ final class LocalizationTests: XCTestCase {
         )
     }
 
+    func testSidebarOverflowCountUsesSupportedObjectPlaceholder() {
+        let english = L10n.text("ui.more_sessions_count", language: .english)
+        let simplifiedChinese = L10n.text("ui.more_sessions_count", language: .simplifiedChinese)
+
+        // L10n.formatTemplate 会先把参数安全地转换成 NSString，因此目录只能使用 %@。
+        // 若误写成 %lld，运行时会把对象地址当作数量展示，出现巨大的正数或负数。
+        XCTAssertEqual(L10n.formatTemplate(english, arguments: [28]), "28 more")
+        XCTAssertEqual(L10n.formatTemplate(simplifiedChinese, arguments: [28]), "还有 28 条")
+    }
+
     func testExplicitLanguageLookupSwitchesCatalogWithoutRestart() {
         XCTAssertEqual(L10n.text("ui.settings", language: .english), "settings")
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
@@ -302,6 +312,39 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
         defaults.set("future-provider", forKey: VoiceInputProvider.storageKey)
         XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
+    }
+
+    func testVoiceInputProviderAvailabilityFiltersAppleOnUnsupportedSystems() {
+        XCTAssertEqual(
+            VoiceInputProvider.availableProviders(supportsAppleSpeech: false),
+            [.codex]
+        )
+        XCTAssertEqual(
+            VoiceInputProvider.availableProviders(supportsAppleSpeech: true),
+            [.codex, .apple]
+        )
+    }
+
+    func testSavedAppleVoiceProviderFallsBackWithoutOverwritingStoredValue() {
+        let suiteName = "VoiceInputProviderCompatibilityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(VoiceInputProvider.apple.rawValue, forKey: VoiceInputProvider.storageKey)
+
+        XCTAssertEqual(
+            VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: false),
+            .codex
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: VoiceInputProvider.storageKey),
+            VoiceInputProvider.apple.rawValue,
+            "旧系统回退时不应清除升级后可恢复的历史偏好"
+        )
+        XCTAssertEqual(
+            VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: true),
+            .apple
+        )
     }
 
     func testVoiceInputProvidersExposeDistinctNativeSystemIcons() {

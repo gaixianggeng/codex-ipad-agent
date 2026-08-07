@@ -2250,6 +2250,7 @@ extension SessionStore {
     }
 
     func clearConnectionData() {
+        invalidateCarStatusHostObservation()
         controlledGlobalDiscoveryUnavailable = false
         controlledGlobalSessionIDs = []
         stopRelatedSessionObservation()
@@ -2392,8 +2393,8 @@ extension SessionStore {
         isClaudeRuntimeChannelAvailable = false
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
-        isRefreshingAccountTokenUsage = false
-        isAccountTokenUsageUnavailable = false
+        accountTokenActivity = .idle
+        isRefreshingAccountTokenActivity = false
         accountTokenUsageRefreshHostScope = nil
         refreshingUsageRuntimeProviders = []
         isRefreshingAppServerModels = false

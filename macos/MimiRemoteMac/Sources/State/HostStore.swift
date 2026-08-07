@@ -457,6 +457,41 @@ final class HostStore {
         }
     }
 
+    /// failed/stopped 状态下的显式恢复入口。只执行一次启动闭环，失败后保留诊断信息，
+    /// 不在后台无限重试，也不改变现有 Token 和配对关系。
+    func repairAndStartService() async {
+        guard !isBusy else { return }
+        if owner == .macApp {
+            await restartService()
+            return
+        }
+
+        isBusy = true
+        lifecycle = .starting
+        lastError = nil
+        defer { isBusy = false }
+
+        guard agent.configExists() else {
+            lifecycle = .notConfigured
+            return
+        }
+        if await homebrew.isLoaded() {
+            homebrewLoaded = true
+            owner = .homebrew
+            lifecycle = .migrationRequired
+            await refreshHomebrewStatus()
+            return
+        }
+        if services.agentStatus() == .requiresApproval {
+            owner = .none
+            lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
+            services.openLoginItemsSettings()
+            return
+        }
+        await enableLoginLaunchBestEffort()
+        await startMacAgentIfNeeded()
+    }
+
     /// 菜单栏弹窗关闭后对应 View 可能立即销毁，因此停止任务必须由长生命周期的 Store 持有。
     /// 这个同步入口还会立即更新 UI，让用户明确知道点击已经生效。
     func requestStopServiceAndQuit() {
@@ -497,49 +532,109 @@ final class HostStore {
         switch services.agentStatus() {
         case .enabled:
             owner = .macApp
-            do {
-                if reloadConfiguration {
+            if reloadConfiguration {
+                do {
                     try await reloadMacAgentForConfigurationChange()
-                    return
+                } catch {
+                    fail(error)
                 }
-                if !services.isAgentRegistrationCurrent() {
-                    // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
-                    // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
-                    lifecycle = .starting
+                return
+            }
+
+            if !services.isAgentRegistrationCurrent() {
+                // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
+                // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
+                lifecycle = .starting
+                do {
                     try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-                    try await registerMacAgentAndWaitForReady()
-                    return
+                    try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+                } catch {
+                    fail(error)
                 }
-                let current = try await agent.status()
-                status = current
-                doctor = current.doctor
-                if current.hasAgentVersionMismatch {
-                    // 覆盖安装不会自动替换 launchd 已映射的旧二进制。只在 App
-                    // 启动阶段发现明确版本漂移时做一次受控换代，避免长期半更新。
-                    lifecycle = .starting
-                    try await unregisterMacAgentAndWait(endpoint: current.endpoint)
-                    try await registerMacAgentAndWaitForReady()
-                } else {
-                    apply(current)
-                }
+                return
+            }
+
+            let current: AgentStatus
+            do {
+                current = try await agent.status()
+            } catch is CancellationError {
+                return
             } catch {
-                fail(error)
+                // 已登记却无法执行 status，常见原因是覆盖安装后仍复用旧的 Launch Constraint。
+                // 自动执行一次完整换代，成功后即停止；失败则交给用户诊断，不循环重启。
+                await repairEnabledMacAgent(after: error)
+                return
+            }
+
+            status = current
+            doctor = current.doctor
+            if current.hasAgentVersionMismatch {
+                // 覆盖安装不会自动替换 launchd 已映射的旧二进制。只在 App
+                // 启动阶段发现明确版本漂移时做一次受控换代，避免长期半更新。
+                lifecycle = .starting
+                do {
+                    try await unregisterMacAgentAndWait(endpoint: current.endpoint)
+                    try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+                } catch {
+                    fail(error)
+                }
+            } else {
+                apply(current)
             }
         case .notRegistered:
-            lifecycle = .starting
-            do {
-                try await prepareAutomaticNetworkBeforeServiceStart()
-                owner = .macApp
-                try await registerMacAgentAndWaitForReady()
-            } catch {
-                fail(error)
-            }
+            await registerAvailableMacAgent(recoveringMissingRecord: false)
         case .requiresApproval:
             owner = .none
             lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
         case .notFound:
+            // `.notFound` 是 ServiceManagement 的泛化状态，不代表包内 plist 缺失。
+            // 资源完整时主动登记一次，正好覆盖 BTM 丢记录和首次安装两种现场。
+            await registerAvailableMacAgent(recoveringMissingRecord: true)
+        }
+    }
+
+    private func registerAvailableMacAgent(recoveringMissingRecord: Bool) async {
+        if let configurationError = services.agentConfigurationError() {
             owner = .none
-            lifecycle = .failed("App 内缺少 LaunchAgent 配置，请重新安装。")
+            lifecycle = .failed(configurationError)
+            lastError = configurationError
+            return
+        }
+
+        lifecycle = .starting
+        do {
+            try await prepareAutomaticNetworkBeforeServiceStart()
+            owner = .macApp
+            try await registerMacAgentAndWaitForReady()
+        } catch {
+            switch services.agentStatus() {
+            case .requiresApproval:
+                owner = .none
+                lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
+            case .enabled:
+                owner = .macApp
+                fail(error)
+            case .notRegistered, .notFound:
+                owner = .none
+                if recoveringMissingRecord {
+                    fail(ServiceLifecycleError.agentRegistrationFailed(error.localizedDescription))
+                } else {
+                    fail(error)
+                }
+            }
+        }
+    }
+
+    private func repairEnabledMacAgent(after initialError: Error) async {
+        lifecycle = .starting
+        do {
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+        } catch {
+            fail(ServiceLifecycleError.automaticRepairFailed(
+                initial: initialError.localizedDescription,
+                recovery: error.localizedDescription
+            ))
         }
     }
 
@@ -645,25 +740,44 @@ final class HostStore {
         throw AgentClientError.commandFailed(detail)
     }
 
-    private func registerMacAgentAndWaitForReady() async throws {
-        try services.registerAgent()
-        try await waitForMacAgentReady()
-        // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
-        services.markAgentRegistrationCurrent()
+    private func registerMacAgentAndWaitForReady(
+        allowAutomaticRepair: Bool = true
+    ) async throws {
+        do {
+            try services.registerAgent()
+            try await waitForMacAgentReady()
+            // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
+            services.markAgentRegistrationCurrent()
+        } catch {
+            guard allowAutomaticRepair, services.agentStatus() == .enabled else {
+                throw error
+            }
+
+            let initialError = error
+            do {
+                // register 已落入 enabled 但进程未就绪时，完整换代一次以刷新 BTM
+                // 的 Launch Constraint；递归调用关闭修复开关，保证最多只重试一次。
+                try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+                try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+            } catch {
+                throw ServiceLifecycleError.automaticRepairFailed(
+                    initial: initialError.localizedDescription,
+                    recovery: error.localizedDescription
+                )
+            }
+        }
     }
 
     private func waitForMacAgentUnregistered() async throws {
         for attempt in 0..<40 {
             try Task.checkCancellation()
             switch services.agentStatus() {
-            case .notRegistered:
+            case .notRegistered, .notFound:
                 return
             case .enabled:
                 break
             case .requiresApproval:
                 throw ServiceLifecycleError.requiresApproval
-            case .notFound:
-                throw ServiceLifecycleError.agentNotFound
             }
 
             if attempt < 39 {
@@ -730,7 +844,8 @@ final class HostStore {
         case .notRegistered:
             lifecycle = .stopped
         case .notFound:
-            lifecycle = .failed("App 内缺少 LaunchAgent 配置，请重新安装。")
+            owner = .none
+            await startMacAgentIfNeeded()
         }
     }
 
@@ -1084,6 +1199,7 @@ final class HostStore {
         )
         let services = ServiceManagementClient(
             agentStatus: { .enabled },
+            agentConfigurationError: { nil },
             isAgentRegistrationCurrent: { true },
             markAgentRegistrationCurrent: {},
             registerAgent: {},
@@ -1117,7 +1233,8 @@ private enum ServiceLifecycleError: LocalizedError {
     case unregisterTimedOut
     case stopTimedOut
     case requiresApproval
-    case agentNotFound
+    case agentRegistrationFailed(String)
+    case automaticRepairFailed(initial: String, recovery: String)
 
     var errorDescription: String? {
         switch self {
@@ -1127,8 +1244,10 @@ private enum ServiceLifecycleError: LocalizedError {
             "旧服务仍占用当前 Endpoint，未继续启动新版本；请稍后重试。"
         case .requiresApproval:
             "请先在系统设置的登录项中允许 Mimi Remote Mac。"
-        case .agentNotFound:
-            "App 内缺少 LaunchAgent 配置，请重新安装。"
+        case .agentRegistrationFailed(let detail):
+            "系统没有找到原服务记录，自动重新登记失败：\(detail)。请运行诊断并重试。"
+        case .automaticRepairFailed(let initial, let recovery):
+            "服务首次启动失败（\(initial)），自动重新登记仍未恢复（\(recovery)）。请运行诊断。"
         }
     }
 }

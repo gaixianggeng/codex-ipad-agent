@@ -1,3 +1,4 @@
+import QuickLook
 import SwiftUI
 
 struct ConversationActivityBatchRow: View, Equatable {
@@ -144,12 +145,16 @@ struct ConversationActivityBatchRow: View, Equatable {
 }
 
 struct ConversationActivityRow: View, Equatable {
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .body) private var activityTitleSize: CGFloat = 14
     @ScaledMetric(relativeTo: .footnote) private var activityDetailSize: CGFloat = 12
     @ScaledMetric(relativeTo: .caption) private var activityMarkerSize: CGFloat = 11
+    @State private var historyOutputPreviewURL: URL?
+    @State private var isOpeningHistoryOutput = false
+    @State private var historyOutputError: String?
     let message: ConversationMessage
     let layout: ConversationLayout
     let isExpanded: Bool
@@ -175,20 +180,29 @@ struct ConversationActivityRow: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
+        .quickLookPreview($historyOutputPreviewURL)
     }
 
     @ViewBuilder
     private var rowSurface: some View {
-        if hasExpandableDetails {
-            Button(action: toggle) {
+        VStack(alignment: .leading, spacing: 0) {
+            if hasExpandableDetails {
+                Button(action: toggle) {
+                    rowContent
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(activityAccessibilityDescription)
+                .accessibilityValue(isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected"))
+                .accessibilityHint(isExpanded ? L10n.text("ui.collapse_current_process_details") : L10n.text("ui.expand_current_process_details"))
+            } else {
                 rowContent
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(activityAccessibilityDescription)
-            .accessibilityValue(isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected"))
-            .accessibilityHint(isExpanded ? L10n.text("ui.collapse_current_process_details") : L10n.text("ui.expand_current_process_details"))
-        } else {
-            rowContent
+
+            if isExpanded, hasExpandableDetails {
+                expandedDetails
+                    .padding(.leading, 22)
+                    .padding(.top, 3)
+            }
         }
     }
 
@@ -217,10 +231,6 @@ struct ConversationActivityRow: View, Equatable {
                             .foregroundStyle(tokens.secondaryText.opacity(0.84))
                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
                             .truncationMode(.middle)
-                    }
-                    if isExpanded {
-                        expandedDetails
-                            .padding(.top, 3)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -270,8 +280,67 @@ struct ConversationActivityRow: View, Equatable {
                         .lineLimit(8)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let historyOutputID = payload.historyOutputID {
+                    Button {
+                        Task { await openHistoryOutput(id: historyOutputID) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Label(historyOutputButtonTitle(payload), systemImage: "doc.text.magnifyingglass")
+                            if isOpeningHistoryOutput {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            }
+                        }
+                        // iPad 上可见表面保持紧凑，但原生 Button 触控区仍至少 44pt。
+                        .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isOpeningHistoryOutput)
+                    .accessibilityHint(L10n.text("ui.open_full_output"))
+                }
+                if let historyOutputError {
+                    Text(historyOutputError)
+                        .font(themeStore.uiFont(.caption2))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+    }
+
+    private func historyOutputButtonTitle(_ payload: ConversationActivityPayload) -> String {
+        guard let bytes = payload.outputByteCount, bytes > 0 else {
+            return L10n.text("ui.open_full_output")
+        }
+        return [
+            L10n.text("ui.open_full_output"),
+            ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file),
+        ].joined(separator: " · ")
+    }
+
+    @MainActor
+    private func openHistoryOutput(id: String) async {
+        guard !isOpeningHistoryOutput else {
+            return
+        }
+        isOpeningHistoryOutput = true
+        historyOutputError = nil
+        defer { isOpeningHistoryOutput = false }
+        do {
+            historyOutputPreviewURL = try await sessionStore.previewHistoryOutput(id: id)
+        } catch is CancellationError {
+            return
+        } catch {
+            historyOutputError = userFacingHistoryOutputError(error)
+        }
+    }
+
+    private func userFacingHistoryOutputError(_ error: Error) -> String {
+        if case AgentAPIError.server(let status, _) = error, status == 404 {
+            return L10n.text("ui.the_historical_output_cache_has_expired_please_refresh")
+        }
+        return error.localizedDescription
     }
 
     private func activityDetailLine(_ label: String, value: String, monospaced: Bool = false) -> some View {

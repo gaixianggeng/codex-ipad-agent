@@ -264,6 +264,16 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
         scheme: ThemeResolvedScheme,
         reduceTransparency: Bool
     ) -> Self {
+        // 浅色额度条和输入卡必须使用同一块不透明暖白，避免薄材质混入背景后偏成冷灰。
+        // 两者的主次改由阴影深度表达，而不是再增加一套近似的表面色。
+        if scheme == .light {
+            return Self(
+                materialStrength: .opaque,
+                surfaceTintOpacity: 1,
+                borderOpacity: reduceTransparency ? 0.08 : 0.05
+            )
+        }
+
         guard !reduceTransparency else {
             return Self(
                 materialStrength: .opaque,
@@ -272,19 +282,11 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
             )
         }
 
-        // 状态栏与输入卡使用同一层功能材质；展开时只增加模糊厚度保证长内容可读，
+        // 深色继续保留功能材质；展开时只增加模糊厚度保证长内容可读，
         // 不再靠阴影、彩色双描边或多层高光制造实体卡片感。
-        let surfaceTintOpacity: Double
-        switch scheme {
-        case .light:
-            surfaceTintOpacity = 0.58
-        case .dark:
-            surfaceTintOpacity = 0.46
-        }
-
         return Self(
             materialStrength: isExpanded ? .regular : .thin,
-            surfaceTintOpacity: surfaceTintOpacity,
+            surfaceTintOpacity: 0.46,
             borderOpacity: 0.58
         )
     }
@@ -316,7 +318,7 @@ struct ComposerStatusTray: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let surfaceStyle = surfaceStyle(tokens: tokens)
-        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: isGoalExpanded ? 20 : 16, style: .continuous)
 
         VStack(alignment: .leading, spacing: isGoalExpanded ? 8 : 0) {
             // 展开态把状态内容和收起按钮放到同一行，避免先出现一整行空白按钮区。
@@ -326,7 +328,9 @@ struct ComposerStatusTray: View {
                 collapsedHeader(tokens: tokens)
             }
 
-            if let trimmedGoalError {
+            // 收起态只表达“发生了什么”；详细错误随展开内容渐进披露，避免状态条
+            // 因两行错误信息重新长成一张常驻卡片。
+            if isGoalExpanded, let trimmedGoalError {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle")
                     Text(trimmedGoalError)
@@ -336,7 +340,7 @@ struct ComposerStatusTray: View {
                 .foregroundStyle(tokens.warning)
             }
         }
-        .padding(isGoalExpanded ? 10 : 8)
+        .padding(isGoalExpanded ? 10 : 0)
         // 状态栏和输入卡共用同一条 composer 轨道；展开后也不要另设宽度上限，
         // 否则 iPad 宽屏下会出现上窄下宽、左右边界不一致的视觉断层。
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -344,7 +348,12 @@ struct ComposerStatusTray: View {
             traySurface(shape: shape, tokens: tokens, surfaceStyle: surfaceStyle)
         }
         .overlay {
-            shape.strokeBorder(tokens.border.opacity(surfaceStyle.borderOpacity), lineWidth: 0.75)
+            shape.strokeBorder(
+                tokens.resolvedScheme == .light
+                    ? Color.black.opacity(surfaceStyle.borderOpacity)
+                    : tokens.border.opacity(surfaceStyle.borderOpacity),
+                lineWidth: 0.75
+            )
         }
         .accessibilityElement(children: .contain)
     }
@@ -352,7 +361,7 @@ struct ComposerStatusTray: View {
     private func collapsedHeader(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 10) {
                     if sessionControlNotice != nil {
                         collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
                     }
@@ -365,18 +374,19 @@ struct ComposerStatusTray: View {
                         collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
                     }
                 }
-                .padding(.vertical, 1)
             }
             .layoutPriority(1)
 
-            iconButton(
-                title: isGoalExpanded ? L10n.text("ui.collapse_state") : L10n.text("ui.expanded_state"),
-                systemImage: isGoalExpanded ? "chevron.up" : "chevron.down",
+            collapsedDisclosureButton(
+                title: L10n.text("ui.expanded_state"),
+                systemImage: "chevron.down",
                 tint: tokens.secondaryText,
-                isDisabled: false,
                 action: onToggleGoalExpanded
             )
         }
+        .padding(.leading, 10)
+        .padding(.trailing, 2)
+        .frame(minHeight: 44)
     }
 
     @ViewBuilder
@@ -424,25 +434,38 @@ struct ComposerStatusTray: View {
     }
 
     private func collapsedChip(title: String, systemImage: String, tint: Color, tokens: ThemeTokens) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 16, weight: .semibold))
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
                 .foregroundStyle(tint)
             Text(title)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(1)
         }
-        .frame(height: 44)
-        .padding(.horizontal, 12)
-        .modifier(
-            ComposerFlatControlSurface(
-                tokens: tokens,
-                cornerRadius: 12,
-                isEmphasized: false
-            )
-        )
+        .frame(height: 28)
+        .padding(.horizontal, 2)
         .accessibilityElement(children: .combine)
+    }
+
+    /// 收起态只保留一个 44pt 命中区，视觉上不再叠一层独立方形按钮。
+    /// 这样状态 rail 保持紧凑，同时仍满足触控和 VoiceOver 的可达性。
+    private func collapsedDisclosureButton(
+        title: String,
+        systemImage: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .help(title)
+        .accessibilityLabel(title)
     }
 
     private func adaptiveStatusModules(tokens: ThemeTokens) -> some View {
@@ -687,16 +710,28 @@ struct ComposerStatusTray: View {
     ) -> some View {
         switch surfaceStyle.materialStrength {
         case .opaque:
-            shape.fill(tokens.elevatedSurface)
+            if tokens.resolvedScheme == .light {
+                // 与侧栏、输入卡逐像素共享同一白色；额度条只保留很短的接触阴影，
+                // 让它贴近页面，同时与下方略微浮起的输入卡保持主次。
+                shape
+                    .fill(tokens.inputBackground)
+                    .shadow(
+                        color: Color.black.opacity(reduceTransparency ? 0.04 : 0.025),
+                        radius: 2,
+                        y: 1
+                    )
+            } else {
+                shape.fill(tokens.elevatedSurface)
+            }
         case .regular:
-            // 展开态内容更多，只增加材质模糊厚度；表面色和输入卡保持一致。
+            // 深色展开态内容更多，只增加材质模糊厚度。
             shape
                 .fill(.regularMaterial)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
                 }
         case .thin:
-            // 收起态和输入卡共用薄材质及同一表面色，不再额外抬高层级。
+            // 深色收起态维持薄材质，不再额外抬高层级。
             shape
                 .fill(.thinMaterial)
                 .overlay {

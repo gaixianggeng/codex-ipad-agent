@@ -121,10 +121,10 @@ else
       *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|macos/MimiRemoteMac/*|macos/MimiRemoteMac/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*)
         go_scope=true
         ;;
-      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux.sh|scripts/test-install-linux.sh|scripts/package-skill.sh|scripts/export-public-backend.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
+      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux.sh|scripts/test-install-linux.sh|scripts/package-skill.sh|scripts/export-public-backend.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
         go_scope=true
         ;;
-      README.md|docs/install-upgrade-rollback.md|docs/codex-protocol-support.md|docs/mimi-protocol-contracts.md|docs/p0-p1-roadmap.md)
+      README.md|README.zh-CN.md|docs/install-upgrade-rollback.md|docs/nightly-release.md|docs/local-testflight.md|docs/codex-protocol-support.md|docs/mimi-protocol-contracts.md|docs/p0-p1-roadmap.md)
         go_scope=true
         ;;
     esac
@@ -133,10 +133,10 @@ else
       ios/MimiRemote/*|ios/MimiRemote/**/*|.xcodebuildmcp/*|.xcodebuildmcp/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*|internal/protocolcontract/*|internal/protocolcontract/**/*)
         ios_scope=true
         ;;
-      scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/test-ios-device-management.sh|scripts/testdata/ios-device-management/*|scripts/testdata/ios-device-management/**/*|scripts/ios_testflight_ci.sh|scripts/ios_testflight_local.sh|scripts/ios_asc_*|scripts/distribute_internal_build.rb|scripts/git-testflight-push|scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/test-ios-localization-smoke.sh|scripts/check-ios-*|scripts/check-app-store-metadata.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/deploy-ipad.sh)
+      scripts/ios-dev.sh|scripts/ios-device-lease.sh|scripts/test-ios-device-management.sh|scripts/testdata/ios-device-management/*|scripts/testdata/ios-device-management/**/*|scripts/ios_testflight_ci.sh|scripts/ios_testflight_local.sh|scripts/ios_asc_*|scripts/test-ios-asc-cli.sh|scripts/distribute_internal_build.rb|scripts/git-testflight-push|scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/test-ios-localization-smoke.sh|scripts/check-ios-*|scripts/check-app-store-metadata.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/deploy-ipad.sh|config/release/ios-asc-cli.env|config/release/ios-testflight.local.env)
         ios_scope=true
         ;;
-      docs/app-store/*|docs/app-store/**/*|docs/privacy-policy.md|docs/support.md|docs/terms-of-use.md|docs/local-testflight.md|docs/mimi-protocol-contracts.md)
+      docs/app-store/*|docs/app-store/**/*|docs/privacy-policy.md|docs/support.md|docs/terms-of-use.md|docs/local-testflight.md|docs/nightly-release.md|docs/mimi-protocol-contracts.md|README.md|README.zh-CN.md)
         ios_scope=true
         ;;
     esac

@@ -351,7 +351,7 @@ while IFS= read -r line; do :; done
 func TestRuntimeVersionFromUserAgent(t *testing.T) {
 	tests := map[string]string{
 		"codex_cli_rs/0.146.0-alpha.3.1":  "0.146.0-alpha.3.1",
-		"alleycat-claude-bridge/0.2.6":    "0.2.6",
+		"alleycat-claude-bridge/0.2.7":    "0.2.7",
 		"codex-cli v1.2.3-beta.1 (macOS)": "1.2.3-beta.1",
 		"  fake-runtime  ":                "fake-runtime",
 		"":                                "",

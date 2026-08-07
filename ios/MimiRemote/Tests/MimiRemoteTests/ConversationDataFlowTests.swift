@@ -877,6 +877,29 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(payload.toolPresentationKind, .generic)
     }
 
+    func testActivityPayloadPreservesLazyHistoryOutputReferenceAndOriginalMagnitude() throws {
+        let item: [String: CodexAppServerJSONValue] = [
+            "type": .string("commandExecution"),
+            "command": .string("go test ./..."),
+            "status": .string("completed"),
+            "aggregatedOutput": .string("预览输出"),
+            "historyOutputRef": .string("agentd-history-output://output-123"),
+            "historyOutputPreview": .string("预览输出"),
+            "historyOutputByteCount": .int(9_786_022),
+            "historyOutputRedacted": .bool(true),
+        ]
+
+        let payload = try XCTUnwrap(ConversationActivityPayload(item: item))
+
+        XCTAssertEqual(payload.historyOutputID, "output-123")
+        XCTAssertEqual(payload.outputPreview, "预览输出")
+        XCTAssertEqual(payload.outputByteCount, 9_786_022)
+
+        var invalidItem = item
+        invalidItem["historyOutputRef"] = .string("agentd-history-output://unsafe/path")
+        XCTAssertNil(try XCTUnwrap(ConversationActivityPayload(item: invalidItem)).historyOutputID)
+    }
+
     func testActivityPresentationHidesProtocolNoiseAndKeepsRawDiagnostics() throws {
         let failedTool: [String: CodexAppServerJSONValue] = [
             "type": .string("mcpToolCall"),

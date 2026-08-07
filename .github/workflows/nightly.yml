@@ -1,0 +1,215 @@
+name: Nightly Internal TestFlight
+
+on:
+  schedule:
+    # 每天北京时间 02:30 运行一次；GitHub cron 使用 UTC。
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: "忽略同一 commit 的成功记录并重新上传 Internal TestFlight"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # 固定组并且不取消正在运行的发布，避免同一 SHA 被并发归档。
+  group: nightly-internal-testflight
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan Nightly Internal TestFlight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      what_to_test: ${{ steps.plan.outputs.what_to_test }}
+      should_publish: ${{ steps.plan.outputs.should_publish }}
+    steps:
+      - name: Checkout immutable main source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+
+      # 先确认来源是官方仓库当前 main，再接触 Actions API；签名 Secrets
+      # 只会由下游 reusable workflow 在同样的边界校验后读取。
+      - name: Trust gate before deduplication API
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
+            || { echo "Nightly 只允许在官方仓库运行。" >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo "Nightly 只允许从 refs/heads/main 运行。" >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "Nightly 需要 40 位 immutable event SHA。" >&2; exit 1; }
+          head_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          [[ "$head_sha" == "$GITHUB_SHA" && "$main_sha" == "$GITHUB_SHA" ]] \
+            || { echo "Nightly 来源不是最新 origin/main。" >&2; exit 1; }
+
+      - name: Check previous successful Nightly runs
+        id: plan
+        shell: bash
+        env:
+          FORCE_PUBLISH: ${{ inputs.force_publish || false }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$SOURCE_SHA"
+          should_publish=true
+          skip_reason=""
+          if [[ "$FORCE_PUBLISH" != "true" ]]; then
+            runs_file="$RUNNER_TEMP/nightly-successful-runs.json"
+            curl --fail --silent --show-error \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?head_sha=${source_sha}&per_page=100" \
+              > "$runs_file"
+            candidate_runs="$RUNNER_TEMP/nightly-candidate-runs.txt"
+            SOURCE_SHA="$source_sha" CURRENT_RUN_ID="$GITHUB_RUN_ID" \
+              ruby -rjson -e '
+                data = JSON.parse(File.read(ARGV.fetch(0)))
+                sha = ENV.fetch("SOURCE_SHA")
+                current = ENV.fetch("CURRENT_RUN_ID")
+                runs = data.fetch("workflow_runs", []).select do |run|
+                  run["head_sha"] == sha && run["id"].to_s != current
+                end
+                if runs.any? { |run| run["conclusion"] == "success" }
+                  puts "success"
+                else
+                  runs.each { |run| puts run.fetch("id") if run["status"] == "completed" }
+                end
+              ' "$runs_file" > "$candidate_runs"
+
+            if grep -qx "success" "$candidate_runs"; then
+              should_publish=false
+              skip_reason="同一 commit 已有成功的 Nightly 运行。"
+            else
+              # 某次上传完成后，caller 的最终汇总仍可能因 GitHub 基础设施
+              # 故障而失败。此时只接受绑定同一 workflow run、head SHA 和
+              # evidence JSON 的 artifact，不能仅凭可伪造的 artifact 名称跳过。
+              while IFS= read -r run_id; do
+                [[ "$run_id" =~ ^[0-9]+$ ]] || continue
+                artifacts_file="$RUNNER_TEMP/nightly-artifacts-${run_id}.json"
+                curl --fail --silent --show-error \
+                  --header "Accept: application/vnd.github+json" \
+                  --header "Authorization: Bearer $GH_TOKEN" \
+                  --header "X-GitHub-Api-Version: 2022-11-28" \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" \
+                  > "$artifacts_file"
+                artifact_ids="$RUNNER_TEMP/nightly-artifact-ids-${run_id}.txt"
+                SOURCE_SHA="$source_sha" EXPECTED_RUN_ID="$run_id" \
+                  ruby -rjson -e '
+                    data = JSON.parse(File.read(ARGV.fetch(0)))
+                    sha = ENV.fetch("SOURCE_SHA")
+                    run_id = ENV.fetch("EXPECTED_RUN_ID")
+                    data.fetch("artifacts", []).each do |artifact|
+                      workflow_run = artifact.fetch("workflow_run", {})
+                      next unless artifact["name"] == "nightly-testflight-#{sha}"
+                      next unless artifact["expired"] == false
+                      next unless workflow_run["id"].to_s == run_id
+                      next unless workflow_run["head_sha"] == sha
+                      puts artifact.fetch("id")
+                    end
+                  ' "$artifacts_file" > "$artifact_ids"
+
+                while IFS= read -r artifact_id; do
+                  [[ "$artifact_id" =~ ^[0-9]+$ ]] || continue
+                  artifact_zip="$RUNNER_TEMP/nightly-evidence-${artifact_id}.zip"
+                  evidence_json="$RUNNER_TEMP/nightly-evidence-${artifact_id}.json"
+                  curl --fail --silent --show-error --location \
+                    --header "Accept: application/vnd.github+json" \
+                    --header "Authorization: Bearer $GH_TOKEN" \
+                    --header "X-GitHub-Api-Version: 2022-11-28" \
+                    "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                    > "$artifact_zip"
+                  [[ "$(unzip -Z1 "$artifact_zip")" == "evidence.json" ]] || continue
+                  unzip -p "$artifact_zip" evidence.json > "$evidence_json"
+                  if SOURCE_SHA="$source_sha" EXPECTED_RUN_ID="$run_id" \
+                    ruby -rjson -e '
+                      value = JSON.parse(File.read(ARGV.fetch(0)))
+                      valid = value["source_sha"] == ENV.fetch("SOURCE_SHA") &&
+                        value["run_id"].to_s == ENV.fetch("EXPECTED_RUN_ID") &&
+                        value["repository"] == ENV.fetch("GITHUB_REPOSITORY") &&
+                        value["workflow"] == "Nightly Internal TestFlight" &&
+                        %w[schedule workflow_dispatch].include?(value["event"]) &&
+                        value["uploaded"] == true
+                      exit(valid ? 0 : 1)
+                    ' "$evidence_json"; then
+                    should_publish=false
+                    skip_reason="同一 commit 已有绑定原 Nightly run 的有效上传证据。"
+                    break 2
+                  fi
+                done < "$artifact_ids"
+              done < "$candidate_runs"
+            fi
+          else
+            skip_reason="force_publish=true，忽略同一 commit 的成功记录。"
+          fi
+
+          commit_title="$(git log -1 --format=%s "$source_sha" \
+            | tr '\r\n' ' ' \
+            | tr -cd '[:print:]' \
+            | sed -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//' \
+            | cut -c1-120)"
+          [[ -n "$commit_title" ]] || commit_title="main commit"
+          what_to_test="Nightly $(TZ=Asia/Shanghai date +%F) ${source_sha:0:7}: ${commit_title}"
+          echo "$skip_reason"
+          {
+            echo "source_sha=$source_sha"
+            echo "should_publish=$should_publish"
+            # commit title 已在上方去除换行，因此使用单行 output，避免固定
+            # heredoc delimiter 被恶意或意外的提交标题提前闭合。
+            echo "what_to_test=$what_to_test"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Upload Nightly Internal TestFlight
+    needs: plan
+    if: needs.plan.outputs.should_publish == 'true'
+    uses: ./.github/workflows/ios-ci.yml
+    with:
+      source_ref: ${{ needs.plan.outputs.source_sha }}
+      publish_internal_testflight: true
+      what_to_test: ${{ needs.plan.outputs.what_to_test }}
+    secrets: inherit
+
+  final:
+    name: Nightly Internal TestFlight result
+    if: always()
+    needs:
+      - plan
+      - publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate Nightly result
+        shell: bash
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          SHOULD_PUBLISH: ${{ needs.plan.outputs.should_publish }}
+        run: |
+          set -euo pipefail
+          echo "Nightly plan=$PLAN_RESULT publish=$PUBLISH_RESULT should_publish=$SHOULD_PUBLISH"
+          [[ "$PLAN_RESULT" == "success" ]] \
+            || { echo "Nightly plan 失败，拒绝标记成功。" >&2; exit 1; }
+          if [[ "$SHOULD_PUBLISH" == "true" ]]; then
+            [[ "$PUBLISH_RESULT" == "success" ]] \
+              || { echo "Nightly 应发布但 Internal TestFlight 未成功。" >&2; exit 1; }
+          else
+            [[ "$PUBLISH_RESULT" == "skipped" ]] \
+              || { echo "Nightly 去重分支必须保持成功且 publish skipped。" >&2; exit 1; }
+          fi

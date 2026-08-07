@@ -491,10 +491,21 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let model = app.descendant(identifier: "composer.model")
         XCTAssertTrue(model.waitForExistence(timeout: 10), "Composer 应展示模型入口")
         model.tap()
+        let modelPicker = app.descendant(identifier: "composer.modelPicker")
         XCTAssertTrue(
-            app.descendant(identifier: "composer.modelPicker").waitForExistence(timeout: 8),
+            modelPicker.waitForExistence(timeout: 8),
             "模型选择浮层应能正常构建，不能触发 compact toolbar 栈溢出"
         )
+        assertCompactModelPickerFitsWindow(modelPicker)
+        dismissPresentedMenuOrPopover()
+
+        rotate(to: .landscapeLeft)
+        let landscapeModel = app.descendant(identifier: "composer.model")
+        XCTAssertTrue(landscapeModel.waitForExistence(timeout: 10), "横屏后 Composer 应保留模型入口")
+        landscapeModel.tap()
+        let landscapePicker = app.descendant(identifier: "composer.modelPicker")
+        XCTAssertTrue(landscapePicker.waitForExistence(timeout: 8), "横屏模型选择浮层应能正常构建")
+        assertCompactModelPickerFitsWindow(landscapePicker)
         dismissPresentedMenuOrPopover()
         XCTAssertEqual(app.state, .runningForeground, "完成紧凑工具栏操作后 App 应保持前台运行")
     }
@@ -659,24 +670,35 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "MimiRemote 应能直接进入工作区"
         )
 
-        let iconButtons = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        // 44pt 胶囊放不下卡片时代的三个可见操作；头像不再是独立按钮，
+        // 换图标与 Git、移除目录一起降级到胶囊的长按菜单。
+        let chips = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card."))
         XCTAssertTrue(
-            iconButtons.firstMatch.waitForExistence(timeout: 15),
-            "工作区卡片应展示可更换的《西游记》角色头像"
+            chips.firstMatch.waitForExistence(timeout: 15),
+            "工作区应展示可切换的《西游记》角色胶囊"
         )
-        assertMinimumTouchTarget(iconButtons.firstMatch, named: "工作区角色头像")
+        assertMinimumTouchTarget(chips.firstMatch, named: "工作区项目胶囊")
 
         let workspaceScreenshot = XCTAttachment(screenshot: app.screenshot())
-        workspaceScreenshot.name = "workspace-character-cards"
+        workspaceScreenshot.name = "workspace-character-chips"
         workspaceScreenshot.lifetime = .keepAlways
         add(workspaceScreenshot)
 
-        iconButtons.firstMatch.tap()
+        chips.firstMatch.press(forDuration: 1.0)
+        let iconEntry = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+            .firstMatch
+        XCTAssertTrue(
+            iconEntry.waitForExistence(timeout: 8),
+            "长按胶囊应提供更换角色入口"
+        )
+        iconEntry.tap()
+
         let picker = app.descendant(identifier: "workspace.characterPicker")
         XCTAssertTrue(
             picker.waitForExistence(timeout: 10),
-            "点击头像后应打开角色选择器"
+            "选择更换角色后应打开角色选择器"
         )
 
         let characterButtons = app.descendants(matching: .any)
@@ -717,18 +739,76 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
 
         let projectID = "debug-sample-app"
-        let cardMenu = app.descendant(identifier: "workspace.card.actions.\(projectID)")
-        XCTAssertTrue(cardMenu.waitForExistence(timeout: 10), "工作区卡片应保留对象级操作菜单")
-        assertMinimumTouchTarget(cardMenu, named: "工作区卡片操作入口")
-        cardMenu.tap()
+        let chip = app.descendant(identifier: "workspace.card.\(projectID)")
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "工作区应保留项目胶囊")
+        assertMinimumTouchTarget(chip, named: "工作区项目胶囊")
+        chip.press(forDuration: 1.0)
 
         let cardGit = firstExistingButton(labels: ["Git 变更", "Git changes"], timeout: 6)
-        XCTAssertNotNil(cardGit, "低频 Git 能力应降级到工作区卡片菜单，而不是被删除")
+        XCTAssertNotNil(cardGit, "低频 Git 能力应降级到项目胶囊的长按菜单，而不是被删除")
         cardGit?.tap()
 
         let complete = firstExistingButton(labels: ["完成", "Done"], timeout: 8)
-        XCTAssertNotNil(complete, "卡片菜单 Git 入口应继续打开绑定当前工作区的 Git 面板")
+        XCTAssertNotNil(complete, "长按菜单的 Git 入口应继续打开绑定当前工作区的 Git 面板")
         complete?.tap()
+    }
+
+    func testWideIPadWorkspaceSessionDetailShowsWorkspaceBackButton() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "工作区宽屏返回按钮只在 iPad regular width 下验收。"
+        )
+        try relaunchDirectlyIntoWorkspaces()
+        rotate(to: .landscapeLeft)
+
+        let workspaceBrowser = app.descendant(identifier: "workspace.browser")
+        XCTAssertTrue(workspaceBrowser.waitForExistence(timeout: 10), "工作区内容应保持可访问")
+
+        let session = app.descendant(identifier: "workspace.session.debug-session-layout")
+        XCTAssertTrue(scrollUntilHittable(session), "工作区应提供可点击的 Debug 会话入口")
+        session.tap()
+
+        let workspaceBack = app.descendant(identifier: "sessionDetail.workspaceBack")
+        XCTAssertTrue(
+            workspaceBack.waitForExistence(timeout: 12),
+            "宽屏从工作区进入会话详情后应展示显式返回按钮"
+        )
+        XCTAssertTrue(workspaceBack.isHittable, "工作区返回按钮应可直接点击")
+        // 系统 toolbar 对 XCUI 暴露的是控件可见区域，不包含 SwiftUI 扩展后的 interaction shape；
+        // 这里用真实点击与返回结果验证命中行为，避免把 36pt 的可见 frame 误判为点击热区。
+
+        let showSidebar = app.descendant(identifier: "sidebar.show")
+        if !showSidebar.waitForExistence(timeout: 2) {
+            guard let collapseSidebar = firstExistingButton(
+                labels: ["收起会话列表", "Collapse conversation list"],
+                timeout: 5
+            ) else {
+                XCTFail("会话详情应能收起浮动侧栏以验证两个 leading 控件")
+                return
+            }
+            collapseSidebar.tap()
+            XCTAssertTrue(showSidebar.waitForExistence(timeout: 8), "收起侧栏后应展示恢复入口")
+        }
+        assertMinimumTouchTarget(showSidebar, named: "侧栏恢复入口")
+        XCTAssertGreaterThanOrEqual(
+            showSidebar.frame.minY,
+            workspaceBack.frame.maxY + 8,
+            "侧栏恢复入口不能覆盖工作区返回按钮"
+        )
+
+        workspaceBack.tap()
+        XCTAssertTrue(
+            workspaceBrowser.waitForExistence(timeout: 12),
+            "点击返回后应回到工作区浏览器"
+        )
+        XCTAssertTrue(
+            workspaceBack.waitForNonExistence(timeout: 8),
+            "回到工作区后不应残留会话详情返回按钮"
+        )
+        if showSidebar.exists {
+            // 恢复共享的 SceneStorage 状态，避免影响后续 UI 用例。
+            showSidebar.tap()
+        }
     }
 
     func testWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
@@ -745,13 +825,13 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         ] {
             rotate(to: orientation)
 
-            let source = app.descendant(identifier: "workspace.card.actions.\(projectID)")
-            XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区卡片操作入口应保持可见")
-            assertMinimumTouchTarget(source, named: "工作区卡片操作入口")
-            source.tap()
+            let source = app.descendant(identifier: "workspace.card.\(projectID)")
+            XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区项目胶囊应保持可见")
+            assertMinimumTouchTarget(source, named: "工作区项目胶囊")
+            source.press(forDuration: 1.0)
 
             let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
-            XCTAssertTrue(request.waitForExistence(timeout: 6), "卡片菜单应提供移除目录入口")
+            XCTAssertTrue(request.waitForExistence(timeout: 6), "长按菜单应提供移除目录入口")
             request.tap()
 
             let confirmation = app.descendant(identifier: "workspace.remove.confirm.\(projectID)")
@@ -771,8 +851,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(source.exists, "取消后工作区仍应保留在列表中")
         }
 
-        let source = app.descendant(identifier: "workspace.card.actions.\(projectID)")
-        source.tap()
+        let source = app.descendant(identifier: "workspace.card.\(projectID)")
+        source.press(forDuration: 1.0)
         let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
         XCTAssertTrue(request.waitForExistence(timeout: 6))
         request.tap()
@@ -972,6 +1052,28 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         // 真机读取的是系统最终命中矩形，可同时覆盖 SwiftUI 内容形状和平台适配结果。
         XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name)宽度应至少为 44pt", file: file, line: line)
         XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name)高度应至少为 44pt", file: file, line: line)
+    }
+
+    private func assertCompactModelPickerFitsWindow(
+        _ modelPicker: XCUIElement,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let windowFrame = app.windows.firstMatch.frame
+        guard min(windowFrame.width, windowFrame.height) < 600 else {
+            return
+        }
+        // 标准字号的 Picker 为 132/184/236pt；辅助功能字号会随 large detent
+        // 增长并在内部滚动。系统没有把 adapted sheet 暴露为 XCUIElement，
+        // 因此用 Picker 到窗口底部的剩余区域守住“不超过一行空白”的用户结果。
+        let maximumUnusedHeight: CGFloat = 52
+        XCTAssertLessThanOrEqual(
+            windowFrame.maxY - modelPicker.frame.maxY,
+            maximumUnusedHeight,
+            "模型 Sheet 应贴合内容，不能在网格上下保留大面积空白",
+            file: file,
+            line: line
+        )
     }
 
     private func assertPopover(

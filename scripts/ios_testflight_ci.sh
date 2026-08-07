@@ -5,9 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj"
 SCHEME="MimiRemote"
 IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.gaixianggeng.mimi}"
+IOS_WIDGET_BUNDLE_ID="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswidget}"
 IOS_TESTFLIGHT_UPLOAD="${IOS_TESTFLIGHT_UPLOAD:-1}"
 IOS_TESTFLIGHT_VALIDATE="${IOS_TESTFLIGHT_VALIDATE:-0}"
 TESTFLIGHT_WHATS_NEW="${TESTFLIGHT_WHATS_NEW:-}"
+IOS_ASC_BUILD_NUMBER_MODE="${IOS_ASC_BUILD_NUMBER_MODE:-off}"
 
 fail() {
   echo "ios-testflight-ci: $1" >&2
@@ -18,10 +20,72 @@ require_env() {
   [[ -n "${!1:-}" ]] || fail "$1 is required"
 }
 
-for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort; do
+case "$IOS_ASC_BUILD_NUMBER_MODE" in
+  off|shadow|enforce) ;;
+  *) fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce" ;;
+esac
+
+run_asc_build_number_shadow() {
+  local phase="$1"
+  local local_build="$2"
+  local expected_build="$3"
+  local shadow_output
+  local shadow_suggested
+
+  [[ "$IOS_ASC_BUILD_NUMBER_MODE" != "off" ]] || return 0
+
+  # 第一阶段只做影子核对：Ruby 仍是实际构建号的唯一来源。shadow 模式下
+  # asc 不可用、查询失败或结果不一致都会写日志但不改变 Archive/上传行为；
+  # 稳定后可切 enforce，把同一检查升级为发布门禁。
+  if shadow_output="$(
+    bash "$ROOT_DIR/scripts/ios_asc_cli.sh" next-build-number \
+      --bundle-id "$IOS_BUNDLE_ID" \
+      --version "$marketing_version" \
+      --build "$local_build"
+  )"; then
+    printf '%s\n' "$shadow_output"
+  else
+    printf 'ASC_CLI_SHADOW_PHASE=%s\n' "$phase"
+    printf 'ASC_CLI_SHADOW_STATUS=error\n'
+    if [[ "$IOS_ASC_BUILD_NUMBER_MODE" == "enforce" ]]; then
+      fail "asc shadow query failed during $phase"
+    fi
+    echo "ios-testflight-ci: warning: asc shadow query failed during $phase; keep Ruby preflight result" >&2
+    return 0
+  fi
+
+  shadow_suggested="$(
+    printf '%s\n' "$shadow_output" \
+      | awk -F= '/^ASC_CLI_SUGGESTED_BUILD_NUMBER=/{print $2; exit}'
+  )"
+  if [[ ! "$shadow_suggested" =~ ^[0-9]+$ ]]; then
+    printf 'ASC_CLI_SHADOW_PHASE=%s\n' "$phase"
+    printf 'ASC_CLI_SHADOW_STATUS=invalid-output\n'
+    if [[ "$IOS_ASC_BUILD_NUMBER_MODE" == "enforce" ]]; then
+      fail "asc shadow output is invalid during $phase"
+    fi
+    echo "ios-testflight-ci: warning: asc shadow output is invalid during $phase; keep Ruby preflight result" >&2
+    return 0
+  fi
+
+  printf 'ASC_CLI_SHADOW_PHASE=%s\n' "$phase"
+  printf 'ASC_CLI_SHADOW_EXPECTED_BUILD_NUMBER=%s\n' "$expected_build"
+  if [[ "$shadow_suggested" == "$expected_build" ]]; then
+    printf 'ASC_CLI_SHADOW_STATUS=match\n'
+    return 0
+  fi
+
+  printf 'ASC_CLI_SHADOW_STATUS=mismatch\n'
+  if [[ "$IOS_ASC_BUILD_NUMBER_MODE" == "enforce" ]]; then
+    fail "asc shadow mismatch during $phase: ruby=$expected_build asc=$shadow_suggested"
+  fi
+  echo "ios-testflight-ci: warning: asc shadow mismatch during $phase: ruby=$expected_build asc=$shadow_suggested; keep Ruby preflight result" >&2
+}
+
+for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
-for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER; do
+for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER; do
   require_env "$key"
 done
 case "$IOS_TESTFLIGHT_UPLOAD:$IOS_TESTFLIGHT_VALIDATE" in
@@ -75,7 +139,7 @@ bash "$ROOT_DIR/scripts/check-ios-privacy-manifest.sh"
 settings="$(
   xcodebuild \
     -project "$PROJECT" \
-    -scheme "$SCHEME" \
+    -target MimiRemote \
     -configuration Release \
     -showBuildSettings
 )"
@@ -94,6 +158,7 @@ preflight="$(
 printf '%s\n' "$preflight"
 build_number="$(printf '%s\n' "$preflight" | awk -F= '/^ASC_SUGGESTED_BUILD_NUMBER=/{print $2; exit}')"
 [[ "$build_number" =~ ^[0-9]+$ ]] || fail "suggested build number must be an integer"
+run_asc_build_number_shadow "before-archive" "$current_build" "$build_number"
 
 output="$RUNNER_TEMP/mimi-testflight/$marketing_version-$build_number"
 archive="$output/MimiRemote.xcarchive"
@@ -112,7 +177,10 @@ cat > "$export_options" <<PLIST
   <key>signingStyle</key><string>manual</string>
   <key>teamID</key><string>$DEVELOPMENT_TEAM</string>
   <key>provisioningProfiles</key>
-  <dict><key>$IOS_BUNDLE_ID</key><string>$IOS_PROVISIONING_PROFILE_SPECIFIER</string></dict>
+  <dict>
+    <key>$IOS_BUNDLE_ID</key><string>$IOS_PROVISIONING_PROFILE_SPECIFIER</string>
+    <key>$IOS_WIDGET_BUNDLE_ID</key><string>$IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER</string>
+  </dict>
 </dict>
 </plist>
 PLIST
@@ -125,12 +193,12 @@ xcodebuild archive \
   -destination 'generic/platform=iOS' \
   -archivePath "$archive" \
   DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-  PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
   MARKETING_VERSION="$marketing_version" \
   CURRENT_PROJECT_VERSION="$build_number" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
-  PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
+  IOS_PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
+  IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER="$IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER" \
   OTHER_CODE_SIGN_FLAGS="--keychain $IOS_SIGNING_KEYCHAIN_PATH" \
   -quiet
 
@@ -140,6 +208,23 @@ archive_info="$archive/Products/Applications/MimiRemote.app/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$archive_info")" == "$marketing_version" ]] || fail "archive version mismatch"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$archive_info")" == "$build_number" ]] || fail "archive build mismatch"
 [[ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$archive_info")" == "false" ]] || fail "encryption declaration must be false"
+
+widget_path="$archive/Products/Applications/MimiRemote.app/PlugIns/MimiCarStatusWidget.appex"
+widget_info="$widget_path/Info.plist"
+[[ -f "$widget_info" ]] || fail "archive widget Info.plist not found"
+[[ "$(plutil -extract CFBundleIdentifier raw -o - "$widget_info")" == "$IOS_WIDGET_BUNDLE_ID" ]] || fail "archive widget bundle id mismatch"
+[[ "$(plutil -extract CFBundleShortVersionString raw -o - "$widget_info")" == "$marketing_version" ]] || fail "archive widget version mismatch"
+[[ "$(plutil -extract CFBundleVersion raw -o - "$widget_info")" == "$build_number" ]] || fail "archive widget build mismatch"
+
+# 主 App 与 Widget 必须分别由各自 profile 签名，同时共享同一个 App Group。
+# 这里审计最终归档签名，而不是只相信构建参数，防止 extension 被主 App profile 误签。
+for signed_bundle in "$archive/Products/Applications/MimiRemote.app" "$widget_path"; do
+  entitlements_plist="$output/$(basename "$signed_bundle").entitlements.plist"
+  codesign -d --entitlements :- "$signed_bundle" > "$entitlements_plist" 2>/dev/null
+  app_groups="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$entitlements_plist" 2>/dev/null || true)"
+  [[ "$app_groups" == *"group.com.gaixianggeng.mimi"* ]] \
+    || fail "$(basename "$signed_bundle") missing shared App Group entitlement"
+done
 echo "ios-testflight-ci: archive toolchain BuildMachineOSBuild=$(plutil -extract BuildMachineOSBuild raw -o - "$archive_info") DTXcodeBuild=$(plutil -extract DTXcodeBuild raw -o - "$archive_info") DTSDKName=$(plutil -extract DTSDKName raw -o - "$archive_info")"
 
 # 递归检查归档内所有 bundle 和 Mach-O，避免主 App 已切换正式 Xcode，
@@ -210,6 +295,7 @@ final_preflight="$(
 )"
 final_suggested="$(printf '%s\n' "$final_preflight" | awk -F= '/^ASC_SUGGESTED_BUILD_NUMBER=/{print $2; exit}')"
 [[ "$final_suggested" == "$build_number" ]] || fail "remote build number changed during archive; rebuild with $final_suggested"
+run_asc_build_number_shadow "before-upload" "$build_number" "$final_suggested"
 
 if [[ "$IOS_TESTFLIGHT_VALIDATE" == "1" ]]; then
   echo "ios-testflight-ci: validate $IOS_BUNDLE_ID $marketing_version ($build_number)"

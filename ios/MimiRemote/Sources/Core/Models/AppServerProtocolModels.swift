@@ -387,7 +387,8 @@ struct CodexAppServerRequestBuilder {
         limit: Int? = 20,
         cursor: String? = nil,
         useStateDBOnly: Bool = true,
-        sortKey: String = "recency_at"
+        sortKey: String = "recency_at",
+        refreshHistory: Bool = false
     ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
@@ -398,7 +399,9 @@ struct CodexAppServerRequestBuilder {
             "sortKey": .string(sortKey),
             "sortDirection": .string("desc"),
             "archived": .bool(false),
-            "useStateDbOnly": .bool(useStateDBOnly)
+            "useStateDbOnly": .bool(useStateDBOnly),
+            // 只有 Claude 权威首屏才显式请求历史目录重扫；默认省略以兼容旧 runtime。
+            "refreshHistory": refreshHistory ? .bool(true) : nil
         ]))
     }
 
@@ -471,9 +474,12 @@ struct CodexAppServerRequestBuilder {
         CodexAppServerRequestSpec(method: "account/rateLimits/read")
     }
 
-    func accountUsageRead() -> CodexAppServerRequestSpec {
-        // 该方法在 app-server schema 中没有 params；省略字段可兼容严格校验版本。
-        CodexAppServerRequestSpec(method: "account/usage/read", params: nil)
+    func accountUsageRead(forceRefresh: Bool = false) -> CodexAppServerRequestSpec {
+        // 强制刷新提示只在 iOS 到 agentd 的 gateway 内生效；agentd 会在转发前剥离它。
+        let params: CodexAppServerJSONValue? = forceRefresh
+            ? .object(["mimiForceRefresh": .bool(true)])
+            : nil
+        return CodexAppServerRequestSpec(method: "account/usage/read", params: params)
     }
 
     func threadStart(projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {

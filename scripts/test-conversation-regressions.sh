@@ -51,6 +51,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConversationStoreScopesSameSessionAndDelayedDeltaByProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWebSocketFailureAutoReconnectsWithLatestReplayWatermark \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleWebSocketStatusDoesNotRetireCurrentReconnect \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testOfflineSuspendsReconnectAndPreservesSessionQueueAndMessages \
@@ -85,8 +86,10 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/FileAttachmentModelsTests \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testConversationBubbleAlignment \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testDefaultDarkConversationPalette \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testEmptyConversationShowsCurrentDirectoryAcrossAppearances \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testRichMarkdownConversationRendering \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testMixedActivityAndImageConversationRendering \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSingleImageMediaCardAlignmentAcrossLayouts \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testUnavailableUserImageGalleryRemainsLegibleInLightTheme \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \

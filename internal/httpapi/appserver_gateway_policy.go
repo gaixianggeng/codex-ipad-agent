@@ -69,7 +69,10 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if frame.ID != nil && normalizeAppServerRuntimeID(p.runtimeID) == "claude" && method == "model/list" {
+	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
+	tracksClientResponse := (runtimeID == "claude" && method == "model/list") ||
+		(runtimeID == "codex" && method == "account/usage/read")
+	if frame.ID != nil && tracksClientResponse {
 		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
 			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
@@ -374,7 +377,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	case "plugin/installed":
 		sanitized = sanitizedGatewayPluginInstalledParams(validated.cwd)
 	case "thread/list":
-		sanitized = sanitizedGatewayThreadListParams(params)
+		sanitized = sanitizedGatewayThreadListParams(runtimeID, params)
 	case "thread/search":
 		sanitized = sanitizedGatewayThreadSearchParams(params)
 	case "thread/read":
@@ -416,7 +419,12 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	if err := decoder.Decode(&frame); err != nil {
 		return nil, fmt.Errorf("JSON-RPC frame 无效")
 	}
-	frame["params"] = sanitized
+	if method == "account/usage/read" {
+		// mimiForceRefresh 是移动端与 agentd 的私有提示；上游 schema 没有 params，必须完整剥离。
+		delete(frame, "params")
+	} else {
+		frame["params"] = sanitized
+	}
 	rewritten, err := json.Marshal(frame)
 	if err != nil {
 		return nil, fmt.Errorf("重写 app-server 安全参数失败：%w", err)
@@ -544,8 +552,12 @@ func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any
 	return safe
 }
 
-func sanitizedGatewayThreadListParams(params map[string]any) map[string]any {
-	return copyGatewayParams(params, "cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly")
+func sanitizedGatewayThreadListParams(runtimeID string, params map[string]any) map[string]any {
+	keys := []string{"cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly"}
+	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		keys = append(keys, "refreshHistory")
+	}
+	return copyGatewayParams(params, keys...)
 }
 
 func sanitizedGatewayThreadSearchParams(params map[string]any) map[string]any {
@@ -738,6 +750,23 @@ func validateGatewayThreadListParams(params map[string]any) error {
 	if value, ok := params["useStateDbOnly"]; ok && value != nil {
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("thread/list.useStateDbOnly 必须是布尔值")
+		}
+	}
+	refreshHistory := false
+	if value, ok := params["refreshHistory"]; ok && value != nil {
+		var valid bool
+		refreshHistory, valid = value.(bool)
+		if !valid {
+			return fmt.Errorf("thread/list.refreshHistory 必须是布尔值")
+		}
+	}
+	if refreshHistory {
+		// 运行期扫描只能绑定首屏显式刷新；cursor 分页和 State DB 快速路径继续保持纯索引读取。
+		if cursor, ok := params["cursor"]; ok && cursor != nil {
+			return fmt.Errorf("thread/list.refreshHistory 只允许用于首屏")
+		}
+		if useStateDBOnly, ok := params["useStateDbOnly"].(bool); ok && useStateDBOnly {
+			return fmt.Errorf("thread/list.refreshHistory 不能与 useStateDbOnly=true 同时使用")
 		}
 	}
 	return nil
