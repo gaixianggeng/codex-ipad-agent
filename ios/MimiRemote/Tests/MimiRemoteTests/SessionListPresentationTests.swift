@@ -209,6 +209,44 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections[0].overflowCount, 0)
     }
 
+    func testSidebarKeepsLocalDraftInRunningSection() throws {
+        let localDraft = makeSession(
+            id: "local-draft",
+            status: "draft",
+            source: "local"
+        )
+        let recentSessions = (0..<10).map { makeSession(id: "recent-\($0)") }
+
+        let sections = SessionListPresentation.sidebarSections([localDraft] + recentSessions)
+        let running = try XCTUnwrap(sections.first { $0.kind == .running })
+        let recent = try XCTUnwrap(sections.first { $0.kind == .recent })
+
+        XCTAssertEqual(running.sessions.map(\.id), [localDraft.id])
+        XCTAssertFalse(recent.sessions.contains { $0.id == localDraft.id })
+    }
+
+    func testSidebarDynamicSectionsIgnorePinnedFirstStoreOrder() throws {
+        let olderPinned = makeSession(
+            id: "older-pinned-running",
+            status: SessionStatus.running.rawValue,
+            recencyAt: Date(timeIntervalSince1970: 100)
+        )
+        let newer = makeSession(
+            id: "newer-running",
+            status: SessionStatus.running.rawValue,
+            recencyAt: Date(timeIntervalSince1970: 200)
+        )
+
+        // 模拟 sortedAllSessions 的置顶优先输入；动态分区仍须恢复为纯时间倒序。
+        let sections = SessionListPresentation.sidebarSections(
+            [olderPinned, newer],
+            pinnedIDs: [olderPinned.id]
+        )
+        let running = try XCTUnwrap(sections.first { $0.kind == .running })
+
+        XCTAssertEqual(running.sessions.map(\.id), [newer.id, olderPinned.id])
+    }
+
     func testSidebarProjectAnchorsAppearOnceAcrossSectionsAndInterleavedRows() {
         let sections = [
             SessionSidebarSection(
@@ -326,6 +364,7 @@ final class SessionListPresentationTests: XCTestCase {
         title: String? = nil,
         preview: String? = nil,
         status: String = SessionStatus.history.rawValue,
+        source: String = "codex",
         createdAt: Date? = nil,
         updatedAt: Date? = nil,
         recencyAt: Date? = nil,
@@ -339,7 +378,7 @@ final class SessionListPresentationTests: XCTestCase {
             dir: dir,
             title: title ?? id,
             status: status,
-            source: "codex",
+            source: source,
             resumeID: nil,
             createdAt: createdAt,
             updatedAt: updatedAt,

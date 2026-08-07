@@ -49,7 +49,7 @@ enum SessionSidebarSectionKind: String, CaseIterable, Equatable, Hashable, Ident
     var id: String { rawValue }
 }
 
-/// 侧边栏一组纯展示数据。输入排序由调用方决定，helper 只做稳定去重和优先级归类。
+/// 侧边栏一组纯展示数据。helper 统一按活动时间排序，再做稳定去重和优先级归类。
 struct SessionSidebarSection: Equatable, Hashable, Identifiable {
     let kind: SessionSidebarSectionKind
     let sessions: [AgentSession]
@@ -213,7 +213,7 @@ enum SessionListPresentation {
     }
 
     /// 按“需要你 → 运行中 → 刚完成 → 置顶 → 最近”建立扁平侧边栏列表。
-    /// 输入已按时间排序时不会重新排序；重复 ID 只保留第一次出现的会话。
+    /// 先恢复纯活动时间顺序，避免 Store 的置顶投影改变各动态分区内部顺序；重复 ID 只保留第一次出现的会话。
     static func sidebarSections(
         _ sessions: [AgentSession],
         pinnedIDs: Set<SessionID> = [],
@@ -221,7 +221,7 @@ enum SessionListPresentation {
         justCompletedLimit: Int = 5,
         recentLimit: Int = 8
     ) -> [SessionSidebarSection] {
-        var unclaimed = stableUniqueSessions(sessions)
+        var unclaimed = chronologicallySortedUniqueSessions(sessions)
 
         func consume(where predicate: (AgentSession) -> Bool) -> [AgentSession] {
             var consumed: [AgentSession] = []
@@ -244,7 +244,8 @@ enum SessionListPresentation {
             session.pendingApproval != nil
                 || session.pendingUserInput != nil
         }
-        let running = consume { $0.isRunning }
+        // 本地草稿代表尚未发送首条消息的新会话，也应固定留在“进行中”，不能被 recent 上限截掉。
+        let running = consume { $0.isRunning || $0.isLocalDraft }
         let unread = consume { session in
             !session.isLocalDraft && unreadIDs.contains(session.id)
         }
@@ -332,6 +333,23 @@ enum SessionListPresentation {
             unique.append(session)
         }
         return unique
+    }
+
+    /// 按活动时间倒序排列；时间完全相同时保留输入顺序，避免刷新时同秒会话无意义跳动。
+    private static func chronologicallySortedUniqueSessions(_ sessions: [AgentSession]) -> [AgentSession] {
+        let uniqueSessions = stableUniqueSessions(sessions)
+        let inputOrderByID = Dictionary(
+            uniqueKeysWithValues: uniqueSessions.enumerated().map { ($0.element.id, $0.offset) }
+        )
+
+        return uniqueSessions.sorted { lhs, rhs in
+            let leftDate = lhs.recencyAt ?? lhs.updatedAt ?? lhs.createdAt ?? .distantPast
+            let rightDate = rhs.recencyAt ?? rhs.updatedAt ?? rhs.createdAt ?? .distantPast
+            if leftDate == rightDate {
+                return (inputOrderByID[lhs.id] ?? 0) < (inputOrderByID[rhs.id] ?? 0)
+            }
+            return leftDate > rightDate
+        }
     }
 
     private static func appendSection(
