@@ -64,7 +64,7 @@ if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
 fi
 DMG_PATH="$(cd "$(dirname "$DMG_PATH")" && pwd)/$(basename "$DMG_PATH")"
 
-for command_name in codesign hdiutil lipo plutil shasum spctl xcrun; do
+for command_name in arch codesign file find hdiutil lipo plutil shasum spctl sysctl xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -93,6 +93,7 @@ trap cleanup EXIT
 hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MOUNT_DIR" "$DMG_PATH"
 MOUNTED=1
 APP_PATH="$MOUNT_DIR/Mimi Remote Mac.app"
+APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
@@ -109,8 +110,19 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
-"$AGENT_PATH" version >/dev/null
-bridge_version_output="$("$BRIDGE_PATH" --version)"
+
+# macOS 27 的前向兼容通知由 Rosetta 进程启动触发。Apple silicon 上显式选择
+# arm64，避免版本探针继承调用方的翻译架构偏好，反而由发布检查制造误报。
+run_native_version_probe() {
+  if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+    /usr/bin/arch -arm64 "$@"
+    return
+  fi
+  "$@"
+}
+
+run_native_version_probe "$AGENT_PATH" version >/dev/null
+bridge_version_output="$(run_native_version_probe "$BRIDGE_PATH" --version)"
 if [[ "$bridge_version_output" =~ ^alleycat-claude-bridge[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
   bridge_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
 else
@@ -132,7 +144,50 @@ if ! version_at_least "$bridge_version" "$minimum_bridge_version"; then
   exit 1
 fi
 
-for binary_path in "$APP_PATH/Contents/MacOS/Mimi Remote Mac" "$AGENT_PATH" "$BRIDGE_PATH"; do
+# 不只检查三个已知入口；后续新增的 framework、helper 或工具也必须带 arm64，
+# 并声明可识别的 macOS 构建元数据，防止 x86-only 组件静默进入发布包。
+macho_count=0
+while IFS= read -r -d '' candidate_path; do
+  candidate_kind="$(file -b "$candidate_path")"
+  if [[ "$candidate_kind" != Mach-O* ]]; then
+    continue
+  fi
+
+  macho_count=$((macho_count + 1))
+  binary_archs="$(lipo -archs "$candidate_path")"
+  if [[ " $binary_archs " != *" arm64 "* ]]; then
+    echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 是 x86-only Mach-O，缺少 arm64。" >&2
+    exit 1
+  fi
+
+  reference_sdk=""
+  reference_sdk_arch=""
+  for binary_arch in $binary_archs; do
+    build_metadata="$(xcrun vtool -arch "$binary_arch" -show-build "$candidate_path")"
+    if ! grep -Eq 'platform[[:space:]]+MACOS|cmd[[:space:]]+LC_VERSION_MIN_MACOSX' <<<"$build_metadata" \
+      || ! grep -Eq '(minos|version)[[:space:]]+[0-9]+' <<<"$build_metadata" \
+      || ! grep -Eq 'sdk[[:space:]]+[1-9][0-9]*(\.[0-9]+)*' <<<"$build_metadata"; then
+      echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${binary_arch} 切片缺少可识别的 macOS 构建元数据。" >&2
+      exit 1
+    fi
+
+    binary_sdk="$(awk '$1 == "sdk" { print $2; exit }' <<<"$build_metadata")"
+    if [[ -z "$reference_sdk" ]]; then
+      reference_sdk="$binary_sdk"
+      reference_sdk_arch="$binary_arch"
+    elif [[ "$binary_sdk" != "$reference_sdk" ]]; then
+      echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${reference_sdk_arch}/${binary_arch} SDK 不一致（${reference_sdk}/${binary_sdk}）。" >&2
+      exit 1
+    fi
+  done
+done < <(find "$APP_PATH" -type f -print0)
+
+if [[ "$macho_count" -eq 0 ]]; then
+  echo "Mac 安装包校验失败：App 内没有找到 Mach-O 产物。" >&2
+  exit 1
+fi
+
+for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH"; do
   binary_archs="$(lipo -archs "$binary_path")"
   for required_arch in arm64 x86_64; do
     if [[ " $binary_archs " != *" $required_arch "* ]]; then
@@ -185,4 +240,4 @@ team_summary=""
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   team_summary="、Team ID ${app_team_identifier} 一致"
 fi
-echo "Mac 安装包校验通过：universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整${team_summary}。"

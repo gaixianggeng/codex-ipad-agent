@@ -68,6 +68,11 @@ bash scripts/build-macos-installer.sh \
 bash scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
 ```
 
+安装包门禁会枚举 App 内全部 Mach-O，而不是只检查已知的三个入口；每个组件都必须
+包含 arm64，并为每个切片提供可识别的 macOS 平台、最低版本和 SDK 元数据。同一
+universal 组件的 SDK 也必须一致。Apple silicon 上的版本探针显式使用 arm64，避免
+核验脚本执行 Intel 切片并触发 macOS 的 Rosetta 前向兼容通知。
+
 `--snapshot` 产物是 ad-hoc 签名的结构快照，只能验证 universal 二进制、DMG、
 LaunchAgent 和签名封装，不能拖入 Applications 做真实初始化或启动
 `SMAppService`。需要在本机验证首次打开、服务注册和 Claude 自动启动时，使用
