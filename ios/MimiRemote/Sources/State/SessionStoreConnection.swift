@@ -948,6 +948,11 @@ extension SessionStore {
     }
 
     func applyEventReducerOutput(_ output: EventReducerOutput) {
+        if isPublishingEventReducerSessions {
+            deferredEventReducerOutputs.append(output)
+            return
+        }
+        let ownsSessionMutationBatch = beginEventReducerSessionMutationBatch()
         for session in output.upsertSessions {
             upsert(session)
         }
@@ -1009,6 +1014,11 @@ extension SessionStore {
         for mutation in output.messageMutations {
             applyMessageMutation(mutation)
         }
+        // message mutation 可能通过 assistant preview 再次更新 session；必须等这里
+        // 完成后才提交，确保整个 reducer output 只发布一次且前序 mutation 彼此可见。
+        if ownsSessionMutationBatch {
+            commitEventReducerSessionMutationBatch()
+        }
         if let statusMessage = output.statusMessage {
             setStatusMessage(statusMessage)
         }
@@ -1017,6 +1027,54 @@ extension SessionStore {
         }
         if output.disconnectWebSocket {
             disconnectWebSocket()
+        }
+    }
+
+    private func beginEventReducerSessionMutationBatch() -> Bool {
+        // @Published 的同步订阅者可能在副作用阶段重入 applyEventReducerOutput。
+        // 内层输出复用同一 working copy，但只有最外层拥有提交权，避免提前发布并清空外层批次。
+        guard eventReducerSessionMutationBatch == nil else {
+            return false
+        }
+        eventReducerSessionMutationBatch = EventReducerSessionMutationBatch(
+            sessions: sessions
+        )
+        return true
+    }
+
+    private func commitEventReducerSessionMutationBatch() {
+        guard let batch = eventReducerSessionMutationBatch else {
+            return
+        }
+        // 先退出 batch，再赋值 canonical sessions，保证 didSet 走正常的唯一重建路径。
+        eventReducerSessionMutationBatch = nil
+        guard batch.sessions != sessions else {
+            // 中间 mutation 最终抵消时保持 no-op：不发布，也不触发昂贵索引重建。
+            return
+        }
+        isPublishingEventReducerSessions = true
+        sessions = batch.sessions
+        isPublishingEventReducerSessions = false
+        // 订阅 sessions/didSet 派生状态时到达的 output 必须紧跟本次 canonical 提交，
+        // 再继续当前 output 的 status/error/disconnect 副作用，保持同步观察顺序。
+        drainDeferredEventReducerOutputs()
+    }
+
+    private func drainDeferredEventReducerOutputs() {
+        guard !isDrainingDeferredEventReducerOutputs else {
+            return
+        }
+        isDrainingDeferredEventReducerOutputs = true
+        defer { isDrainingDeferredEventReducerOutputs = false }
+
+        // 每轮整体取出，避免 removeFirst 的 O(n) 搬移；处理过程中再次排队的 output
+        // 会在下一轮继续按到达顺序执行。
+        while !deferredEventReducerOutputs.isEmpty {
+            let outputs = deferredEventReducerOutputs
+            deferredEventReducerOutputs.removeAll(keepingCapacity: true)
+            for output in outputs {
+                applyEventReducerOutput(output)
+            }
         }
     }
 
@@ -2425,6 +2483,23 @@ extension SessionStore {
         let session = sessionPreparedForStorage(alignSessionToKnownWorkspace(session))
         syncRuntimeActivity(with: session)
         contextStore.upsert(from: session)
+        if let batch = eventReducerSessionMutationBatch {
+            if let index = sessionIndexByID[session.id] {
+                guard batch.replace(at: index, with: session) else {
+                    return
+                }
+                sessionsByID[session.id] = session
+            } else {
+                batch.insert(session)
+                sessionsByID[session.id] = session
+                // 插入头部会改变所有后续位置；这是批内唯一需要 O(n) 的 lookup 更新，
+                // 与既有 upsert 的数组语义保持一致。
+                sessionIndexByID = Dictionary(
+                    uniqueKeysWithValues: batch.sessions.enumerated().map { ($0.element.id, $0.offset) }
+                )
+            }
+            return
+        }
         if let index = sessionIndexByID[session.id] {
             guard sessions[index] != session else {
                 return
@@ -2452,6 +2527,20 @@ extension SessionStore {
     }
 
     func updateSession(_ id: String, mutate: (inout AgentSession) -> Void) {
+        if let batch = eventReducerSessionMutationBatch {
+            guard let index = sessionIndexByID[id], batch.sessions.indices.contains(index) else {
+                return
+            }
+            let oldValue = batch.sessions[index]
+            var next = oldValue
+            mutate(&next)
+            guard next != oldValue else {
+                return
+            }
+            batch.sessions[index] = next
+            sessionsByID[id] = next
+            return
+        }
         guard let index = sessionIndexByID[id] else {
             return
         }

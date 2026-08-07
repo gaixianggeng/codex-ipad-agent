@@ -72,7 +72,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -108,7 +108,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -137,7 +137,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -187,7 +187,7 @@ extension ConversationDataFlowTests {
         let conversationStore = ConversationStore()
         let logStore = LogStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: logStore,
             clientFactory: { client }
@@ -207,7 +207,7 @@ extension ConversationDataFlowTests {
     func testStructuredAssistantMessageCreatesBubble() async throws {
         let project = makeProject(id: "proj_1")
         let running = makeSession(id: "sess_structured_assistant_live", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -267,7 +267,7 @@ extension ConversationDataFlowTests {
             ],
             messagesResult: []
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
         let logStore = LogStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
@@ -413,11 +413,285 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.drain(lease: macBLease).count, 1)
     }
 
+    func testTerminalStreamStoreMerges1000AssistantChunksAtDrain() {
+        let store = TerminalStreamStore(maxBatchSize: 2)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_1000_chunks"
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: lease.sessionID,
+            turnID: "turn_1000_chunks",
+            itemID: "item_1000_chunks",
+            messageID: "message_1000_chunks",
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: nil
+        )
+        let chunks = (0..<1_000).map { "chunk-\($0)|" }
+
+        for chunk in chunks {
+            XCTAssertFalse(
+                store.append(
+                    .assistantDelta(AgentDelta(text: chunk, role: .assistant, kind: .message), metadata),
+                    lease: lease
+                ),
+                "同一逻辑事件的 chunk 不应提前触发 maxBatchSize"
+            )
+        }
+
+        let drained = store.drain(lease: lease)
+        XCTAssertEqual(drained.count, 1)
+        guard case .assistantDelta(let delta, let returnedMetadata) = drained.first else {
+            return XCTFail("1000 个 assistant chunk 应在 drain 时合并为一个事件")
+        }
+        XCTAssertEqual(delta.text, chunks.joined())
+        XCTAssertEqual(delta.role, .assistant)
+        XCTAssertEqual(delta.kind, .message)
+        XCTAssertEqual(returnedMetadata, metadata)
+    }
+
+    func testTerminalStreamStoreKeepsAssistantAndLogBoundaries() {
+        let store = TerminalStreamStore(maxBatchSize: 64)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_boundaries"
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: lease.sessionID,
+            turnID: "turn_boundaries",
+            itemID: "item_boundaries",
+            messageID: "message_boundaries",
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: nil
+        )
+
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "message-1", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "commentary", role: .assistant, kind: .commentary), metadata),
+            lease: lease
+        )
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "message-2", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        _ = store.append(.turnStarted(metadata), lease: lease)
+        _ = store.append(.logDelta(LogDelta(text: "stdout-1", stream: "stdout"), metadata), lease: lease)
+        _ = store.append(.logDelta(LogDelta(text: "stdout-2", stream: "stdout"), metadata), lease: lease)
+        _ = store.append(.logDelta(LogDelta(text: "stderr", stream: "stderr"), metadata), lease: lease)
+        _ = store.append(.logDelta(LogDelta(text: "stdout-after", stream: "stdout"), metadata), lease: lease)
+
+        let drained = store.drain(lease: lease)
+        XCTAssertEqual(drained.count, 7, "role/kind、控制事件和 log stream 都是合并边界")
+        guard drained.count == 7 else { return }
+        guard case .assistantDelta(let message1, _) = drained[0],
+              case .assistantDelta(let commentary, _) = drained[1],
+              case .assistantDelta(let message2, _) = drained[2],
+              case .turnStarted = drained[3],
+              case .logDelta(let stdout, _) = drained[4],
+              case .logDelta(let stderr, _) = drained[5],
+              case .logDelta(let stdoutAfter, _) = drained[6]
+        else {
+            return XCTFail("事件顺序或类型不应被跨边界合并")
+        }
+        XCTAssertEqual(message1.text, "message-1")
+        XCTAssertEqual(message1.kind, .message)
+        XCTAssertEqual(commentary.text, "commentary")
+        XCTAssertEqual(commentary.kind, .commentary)
+        XCTAssertEqual(message2.text, "message-2")
+        XCTAssertEqual(stdout.text, "stdout-1stdout-2")
+        XCTAssertEqual(stdout.stream, "stdout")
+        XCTAssertEqual(stderr.text, "stderr")
+        XCTAssertEqual(stderr.stream, "stderr")
+        XCTAssertEqual(stdoutAfter.text, "stdout-after")
+        XCTAssertEqual(stdoutAfter.stream, "stdout")
+    }
+
+    func testTerminalStreamStoreMaxBatchCountsLogicalEvents() {
+        let store = TerminalStreamStore(maxBatchSize: 2)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_logical_batch"
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: lease.sessionID,
+            turnID: "turn_logical_batch",
+            itemID: "item_logical_batch",
+            messageID: "message_logical_batch",
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )
+
+        XCTAssertFalse(
+            store.append(
+                .assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata),
+                lease: lease
+            )
+        )
+        XCTAssertFalse(
+            store.append(
+                .assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata),
+                lease: lease
+            ),
+            "两个 raw chunk 仍只算一个逻辑事件"
+        )
+        XCTAssertTrue(store.append(.turnStarted(metadata), lease: lease))
+        XCTAssertTrue(
+            store.append(
+                .assistantDelta(AgentDelta(text: "C", role: .assistant, kind: .message), metadata),
+                lease: lease
+            )
+        )
+
+        let drained = store.drain(lease: lease)
+        XCTAssertEqual(drained.count, 3)
+        guard case .assistantDelta(let firstDelta, _) = drained[0],
+              case .turnStarted = drained[1],
+              case .assistantDelta(let secondDelta, _) = drained[2]
+        else {
+            return XCTFail("logical batch 应保留文本 run 与控制事件顺序")
+        }
+        XCTAssertEqual(firstDelta.text, "AB")
+        XCTAssertEqual(secondDelta.text, "C")
+    }
+
+    func testTerminalStreamStoreReplacesOnlyContiguousPlanSnapshots() {
+        let store = TerminalStreamStore(maxBatchSize: 64)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_completed_snapshots"
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: lease.sessionID,
+            turnID: "turn_completed_snapshots",
+            itemID: "item_completed_snapshots",
+            messageID: "message_completed_snapshots",
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: nil
+        )
+        let otherItemMetadata = AgentEventMetadata(
+            seq: 4,
+            sessionID: lease.sessionID,
+            turnID: metadata.turnID,
+            itemID: "other-item",
+            messageID: metadata.messageID,
+            clientMessageID: nil,
+            revision: 4,
+            createdAt: nil
+        )
+
+        _ = store.append(
+            .messageCompleted(
+                AgentMessage(
+                    id: "plan-old",
+                    sessionID: lease.sessionID,
+                    turnID: metadata.turnID,
+                    itemID: metadata.itemID,
+                    role: .system,
+                    kind: .plan,
+                    content: "旧计划",
+                    revision: 1
+                ),
+                metadata
+            ),
+            lease: lease
+        )
+        _ = store.append(
+            .messageCompleted(
+                AgentMessage(
+                    id: "plan-latest",
+                    sessionID: lease.sessionID,
+                    turnID: metadata.turnID,
+                    itemID: metadata.itemID,
+                    role: .system,
+                    kind: .plan,
+                    content: "最新完整计划",
+                    revision: 2
+                ),
+                metadata
+            ),
+            lease: lease
+        )
+        _ = store.append(
+            .messageCompleted(
+                AgentMessage(
+                    id: "regular-1",
+                    sessionID: lease.sessionID,
+                    turnID: metadata.turnID,
+                    itemID: metadata.itemID,
+                    role: .system,
+                    kind: .message,
+                    content: "普通消息一",
+                    revision: 3
+                ),
+                metadata
+            ),
+            lease: lease
+        )
+        _ = store.append(
+            .messageCompleted(
+                AgentMessage(
+                    id: "regular-2",
+                    sessionID: lease.sessionID,
+                    turnID: metadata.turnID,
+                    itemID: metadata.itemID,
+                    role: .system,
+                    kind: .message,
+                    content: "普通消息二",
+                    revision: 4
+                ),
+                metadata
+            ),
+            lease: lease
+        )
+        _ = store.append(
+            .messageCompleted(
+                AgentMessage(
+                    id: "plan-other-item",
+                    sessionID: lease.sessionID,
+                    turnID: metadata.turnID,
+                    itemID: otherItemMetadata.itemID,
+                    role: .system,
+                    kind: .plan,
+                    content: "另一 item 计划",
+                    revision: 5
+                ),
+                otherItemMetadata
+            ),
+            lease: lease
+        )
+
+        let drained = store.drain(lease: lease)
+        XCTAssertEqual(drained.count, 4)
+        guard case .messageCompleted(let latestPlan, _) = drained[0],
+              case .messageCompleted(let regularOne, _) = drained[1],
+              case .messageCompleted(let regularTwo, _) = drained[2],
+              case .messageCompleted(let otherItemPlan, _) = drained[3]
+        else {
+            return XCTFail("completed snapshot 的边界或顺序错误")
+        }
+        XCTAssertEqual(latestPlan.content, "最新完整计划")
+        XCTAssertEqual(latestPlan.id, "plan-latest")
+        XCTAssertEqual(regularOne.content, "普通消息一")
+        XCTAssertEqual(regularTwo.content, "普通消息二")
+        XCTAssertEqual(otherItemPlan.content, "另一 item 计划")
+    }
+
     func testDisconnectFlushesBufferedRuntimeEventsBeforeSwitchingSession() async throws {
         let project = makeProject(id: "proj_ws_disconnect_flush")
         let running = makeSession(id: "sess_ws_disconnect_flush", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let history = makeSession(id: "sess_ws_disconnect_history", projectID: project.id, title: "历史", status: "history", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running, history], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -472,7 +746,7 @@ extension ConversationDataFlowTests {
     func testWebSocketFailureAutoReconnectsWithLatestReplayWatermark() async throws {
         let project = makeProject(id: "proj_ws_reconnect")
         let running = makeSession(id: "sess_ws_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let logStore = LogStore()
         logStore.append("旧输出", sessionID: running.id, seq: 5)
@@ -515,7 +789,7 @@ extension ConversationDataFlowTests {
     func testWebSocketAutoReconnectDoesNotGiveUpWhileSessionStaysRunning() async throws {
         let project = makeProject(id: "proj_ws_persistent_reconnect")
         let running = makeSession(id: "sess_ws_persistent_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         var sockets: [MockWebSocketClient] = []
@@ -555,7 +829,7 @@ extension ConversationDataFlowTests {
     func testStaleWebSocketStatusDoesNotRetireCurrentReconnect() async throws {
         let project = makeProject(id: "proj_ws_stale_status")
         let running = makeSession(id: "sess_ws_stale_status", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         var sockets: [MockWebSocketClient] = []
@@ -616,7 +890,7 @@ extension ConversationDataFlowTests {
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
         let conversationStore = ConversationStore()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         // 测试必须自行建立认证前置条件，不能依赖其他用例残留在 Keychain 的令牌。
         appStore.token = "test-token"
         let store = SessionStore(
@@ -671,7 +945,7 @@ extension ConversationDataFlowTests {
         let project = makeProject(id: "proj_ws_ended_reconnect")
         let running = makeSession(id: "sess_ws_ended_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let ended = makeSession(id: running.id, projectID: project.id, title: "已结束", status: "history", source: "codex", resumeID: running.id)
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(
             projects: [project],
@@ -717,7 +991,7 @@ extension ConversationDataFlowTests {
     func testWebSocketReconnectRefreshesSnapshotWithLatestEventWatermark() async throws {
         let project = makeProject(id: "proj_ws_snapshot_reconnect")
         let running = makeSession(id: "sess_ws_snapshot", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(
             projects: [project],
@@ -770,7 +1044,7 @@ extension ConversationDataFlowTests {
     func testWebSocketReconnectUsesHistorySnapshotSeqWatermark() async throws {
         let project = makeProject(id: "proj_ws_history_snapshot")
         let running = makeSession(id: "sess_ws_history_snapshot", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(
             projects: [project],
@@ -814,7 +1088,7 @@ extension ConversationDataFlowTests {
     func testReturningToSessionListCancelsQueuedWebSocketReconnect() async throws {
         let project = makeProject(id: "proj_ws_cancel")
         let running = makeSession(id: "sess_ws_cancel", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         var sockets: [MockWebSocketClient] = []
@@ -851,7 +1125,7 @@ extension ConversationDataFlowTests {
         let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -867,7 +1141,7 @@ extension ConversationDataFlowTests {
     func testRuntimeActivityTracksTurnEventsAndClearsOnCompletion() async throws {
         let project = makeProject(id: "proj_runtime_activity")
         let running = makeSession(id: "sess_runtime_activity", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         var sockets: [MockWebSocketClient] = []
@@ -954,7 +1228,7 @@ extension ConversationDataFlowTests {
             createSessionResponse: try makeCreateSessionResponse(session: created)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -974,7 +1248,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -1015,7 +1289,7 @@ extension ConversationDataFlowTests {
         let running = makeSession(id: "sess_goal_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -1065,7 +1339,7 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -1171,7 +1445,7 @@ extension ConversationDataFlowTests {
             tokensUsed: goal.tokensUsed,
             timeUsedSeconds: goal.timeUsedSeconds
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(
             projects: [project],
@@ -1307,7 +1581,7 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [goalSession, plainSession], messagesResult: [])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1337,7 +1611,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1365,7 +1639,7 @@ extension ConversationDataFlowTests {
         ]
         let client = MockSessionStoreClient(projects: [], sessions: [], modelOptions: options)
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1392,7 +1666,7 @@ extension ConversationDataFlowTests {
             rateLimitsByRuntime: ["claude": claudeRateLimit]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1424,7 +1698,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1470,7 +1744,7 @@ extension ConversationDataFlowTests {
             rateLimitHandler: { _ in throw MockError.unimplemented }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1525,7 +1799,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1558,7 +1832,7 @@ extension ConversationDataFlowTests {
             rateLimitsByRuntime: ["codex": RateLimitSummary(primaryUsedPercent: 42)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1587,7 +1861,7 @@ extension ConversationDataFlowTests {
             modelOptions: options
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1620,7 +1894,7 @@ extension ConversationDataFlowTests {
             modelOptions: options
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1651,7 +1925,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1700,7 +1974,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1755,7 +2029,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1798,7 +2072,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1840,7 +2114,7 @@ extension ConversationDataFlowTests {
             createSessionResponse: try makeCreateSessionResponse(session: created)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1875,7 +2149,7 @@ extension ConversationDataFlowTests {
             modelOptionsError: MockError.timeout
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1902,7 +2176,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1930,7 +2204,7 @@ extension ConversationDataFlowTests {
         let options = [
             CodexAppServerModelOption(id: "gpt-running-default", title: "Running Default", provider: "openai", isDefault: true)
         ]
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [], modelOptions: options)
         var sockets: [MockWebSocketClient] = []
@@ -1984,7 +2258,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2058,7 +2332,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [second])
         let conversationStore = ConversationStore()
         let socket = MockWebSocketClient()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2124,7 +2398,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [history, second])
         let conversationStore = ConversationStore()
         let socket = MockWebSocketClient()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2164,7 +2438,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2223,7 +2497,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [history])
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2272,7 +2546,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2324,7 +2598,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn-existing"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -2403,7 +2677,7 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [failed])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2488,7 +2762,7 @@ extension ConversationDataFlowTests {
     func testFailedRunningMessageRetryDoesNotResumeWhenWebSocketIsConnecting() async throws {
         let project = makeProject(id: "proj_retry_connecting_guard")
         let running = makeSession(id: "sess_retry_connecting_guard", projectID: project.id, title: "运行中", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -2525,7 +2799,7 @@ extension ConversationDataFlowTests {
     func testRetryFailedUserMessagePreservesStructuredTurnPayload() async throws {
         let project = makeProject(id: "proj_retry_payload")
         let running = makeSession(id: "sess_retry_payload", projectID: project.id, title: "Retry Payload", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -2573,7 +2847,7 @@ extension ConversationDataFlowTests {
     func testRunningSendKeepsInlineImagePayloadAfterAcceptedForPreview() async throws {
         let project = makeProject(id: "proj_keep_payload")
         let running = makeSession(id: "sess_keep_payload", projectID: project.id, title: "Keep Payload", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         let conversationStore = ConversationStore()
@@ -2629,7 +2903,7 @@ extension ConversationDataFlowTests {
     func testRunningTurnLifecycleKeepsEchoAndFinalAssistantStable() async throws {
         let project = makeProject(id: "proj_turn_lifecycle")
         let running = makeSession(id: "sess_turn_lifecycle", projectID: project.id, title: "Lifecycle", status: "running", source: "codex")
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []

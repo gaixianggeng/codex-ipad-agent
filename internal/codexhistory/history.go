@@ -987,6 +987,17 @@ func messagesPageFromTail(file *os.File, endOffset int64, limit int) (MessagePag
 		if len(newestFirst) < target {
 			pending = storeTailPendingLine(pending, data[:start])
 		}
+		// 大多数分页请求都能在文件尾部的首个 128 KiB 内完成；只有仍需向前
+		// 扫描时才分级扩大下一次 ReadAt（128→256→512 KiB），避免小页快路径
+		// 常驻更大的缓冲区。512 KiB 上限可显著减少长 token_count/tool/result 行跨块时的读取次数
+		// 和 pending 拼接，同时不改变行边界、游标或超大半行丢弃语义。
+		if len(newestFirst) < target && offset > 0 && int64(len(chunk)) < tailReadChunkSize {
+			nextSize := int64(len(chunk)) * 2
+			if nextSize > tailReadChunkSize {
+				nextSize = tailReadChunkSize
+			}
+			chunk = make([]byte, nextSize)
+		}
 	}
 	if len(newestFirst) < target && len(bytes.TrimSpace(pending)) > 0 {
 		if message, ok := parseMessageLine(pending); ok {

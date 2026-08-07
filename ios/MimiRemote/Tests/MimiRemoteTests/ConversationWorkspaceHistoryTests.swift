@@ -130,7 +130,7 @@ extension ConversationDataFlowTests {
     func testRecentActivityProjectionSurvivesTemporaryIDAndStaleListPage() throws {
         let project = makeProject(id: "proj_recent_projection")
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: []) }
@@ -193,7 +193,7 @@ extension ConversationDataFlowTests {
             recencyAt: Date(timeIntervalSince1970: 100)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [session]) }
@@ -257,7 +257,7 @@ extension ConversationDataFlowTests {
             worktreeBranchResults: [project.path: .success(response)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -312,7 +312,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -363,7 +363,7 @@ extension ConversationDataFlowTests {
             resolveResults: [project.path: .success(workspace)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -398,7 +398,7 @@ extension ConversationDataFlowTests {
 
     func testDuplicatedSessionTitleKeepsCopySuffixWithinUTF8Limit() {
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { throw MockError.unimplemented }
@@ -460,7 +460,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -531,7 +531,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -585,7 +585,7 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -644,7 +644,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -704,7 +704,7 @@ extension ConversationDataFlowTests {
             worktreeListResult: .success([item])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -750,7 +750,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -803,7 +803,7 @@ extension ConversationDataFlowTests {
             worktreePruneResult: .success(WorktreePruneResponse(prunedPaths: [workspace.path], worktrees: []))
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -858,7 +858,7 @@ extension ConversationDataFlowTests {
             ))
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -914,7 +914,7 @@ extension ConversationDataFlowTests {
             ))
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -972,7 +972,7 @@ extension ConversationDataFlowTests {
             worktreeCleanupExecutionResult: .success(executed)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1005,7 +1005,7 @@ extension ConversationDataFlowTests {
         let preview = makeWorktreeCleanupResponse(items: [blocked], candidatePaths: [])
         let client = MockSessionStoreClient(projects: [project], sessions: [])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1052,7 +1052,7 @@ extension ConversationDataFlowTests {
             worktreeCleanupExecutionResult: .success(executed)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1081,7 +1081,7 @@ extension ConversationDataFlowTests {
         let secondProject = makeProject(id: "proj_2")
         let client = MockSessionStoreClient(projects: [firstProject, secondProject], sessions: [])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1099,7 +1099,7 @@ extension ConversationDataFlowTests {
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
         let client = MockSessionStoreClient(projects: [project], sessions: [history])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1176,7 +1176,7 @@ extension ConversationDataFlowTests {
             projectSessions: [project.id: [history]]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1203,7 +1203,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1236,7 +1236,7 @@ extension ConversationDataFlowTests {
         }
         let client = MockSessionStoreClient(projects: [project], sessions: sessions)
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1293,7 +1293,7 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: history + [active])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1324,7 +1324,7 @@ extension ConversationDataFlowTests {
         }
         let client = MockSessionStoreClient(projects: [project], sessions: sessions)
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1382,7 +1382,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1455,7 +1455,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["cursor_older": SessionsPage(sessions: olderPage, hasMore: false)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1506,7 +1506,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["workspace_cursor": SessionsPage(sessions: olderPage, hasMore: false)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1556,7 +1556,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["workspace_background_cursor": SessionsPage(sessions: olderPage, hasMore: false)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1623,7 +1623,7 @@ extension ConversationDataFlowTests {
         )
         var now = Date(timeIntervalSince1970: 1_000)
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -1677,7 +1677,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: firstPage, nextCursor: "network_cursor", hasMore: true),
             cursorPages: ["network_cursor": SessionsPage(sessions: olderPage, hasMore: false)]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
         var now = Date(timeIntervalSince1970: 1_000)
@@ -1713,7 +1713,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1747,7 +1747,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: firstPage, nextCursor: "cursor_1", hasMore: true)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1808,7 +1808,7 @@ extension ConversationDataFlowTests {
             createSessionResponse: try makeCreateSessionResponse(session: created)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1838,7 +1838,7 @@ extension ConversationDataFlowTests {
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -2037,7 +2037,7 @@ extension ConversationDataFlowTests {
             createSessionResponse: try makeCreateSessionResponse(session: created)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2099,7 +2099,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2130,7 +2130,7 @@ extension ConversationDataFlowTests {
         let client = MockSessionStoreClient(projects: [project], sessions: [])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2160,7 +2160,7 @@ extension ConversationDataFlowTests {
             projectSessions: [project.id: sessions]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2195,7 +2195,7 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [history, running]))
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2259,7 +2259,7 @@ extension ConversationDataFlowTests {
             recencyAt: Date(timeIntervalSince1970: 10)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: []) }
@@ -2322,7 +2322,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: history + [running])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2369,7 +2369,7 @@ extension ConversationDataFlowTests {
             sessionResponses: [running.id: SessionResponse(session: completed)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2402,7 +2402,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: []) }
@@ -2446,7 +2446,7 @@ extension ConversationDataFlowTests {
             sessionResponses: [running.id: SessionResponse(session: running)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2488,7 +2488,7 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2525,7 +2525,7 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2568,7 +2568,7 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2622,7 +2622,7 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2678,7 +2678,7 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2723,7 +2723,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [running])
         )
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         // 显式配置认证，保证该测试可独立运行，不读取前序测试留下的 Keychain 状态。
         appStore.token = "test-token"
         let store = SessionStore(
@@ -2759,7 +2759,7 @@ extension ConversationDataFlowTests {
         let running = makeSession(id: "sess_observing", projectID: project.id, title: "Mac 运行中", status: "running", source: "codex")
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
@@ -2788,7 +2788,7 @@ extension ConversationDataFlowTests {
         let project = makeProject(id: "proj_takeover")
         let running = makeSession(id: "sess_takeover", projectID: project.id, title: "接管运行中", status: "running", source: "codex")
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2839,7 +2839,7 @@ extension ConversationDataFlowTests {
             createSessionResponse: try makeCreateSessionResponse(session: resumed)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2892,7 +2892,7 @@ extension ConversationDataFlowTests {
         )
         var sockets: [MockWebSocketClient] = []
         let conversationStore = ConversationStore()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2933,7 +2933,7 @@ extension ConversationDataFlowTests {
             preview: "用户可见摘要"
         )
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -3010,7 +3010,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3032,7 +3032,7 @@ extension ConversationDataFlowTests {
         let client = MockSessionStoreClient(projects: [project], sessions: [history])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3052,7 +3052,7 @@ extension ConversationDataFlowTests {
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
         let client = BlockingSessionListRefreshClient(projects: [project], page: SessionsPage(sessions: [history]))
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3091,7 +3091,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [history])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3132,7 +3132,7 @@ extension ConversationDataFlowTests {
             projectSessions: [firstProject.id: [refreshed]]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3162,7 +3162,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3218,7 +3218,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [first, second])
         )
         let socket = MockWebSocketClient()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -3264,7 +3264,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -3319,7 +3319,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -3419,7 +3419,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -3496,7 +3496,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -3553,7 +3553,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -3617,7 +3617,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3690,7 +3690,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3728,7 +3728,7 @@ extension ConversationDataFlowTests {
 
     func testHistoryOversizePolicyFailureExposesStructuredMagnitude() {
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: [])) }
@@ -3767,7 +3767,7 @@ extension ConversationDataFlowTests {
 
     func testHistoryOversizeNoticeFallsBackWhenMagnitudeMissing() {
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: [])) }
@@ -3788,7 +3788,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3844,7 +3844,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3894,7 +3894,7 @@ extension ConversationDataFlowTests {
         let history = makeSession(id: "codex_full_read_oversize", projectID: project.id, title: "老版全量读取超限", status: "history", source: "codex", resumeID: "large")
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3944,7 +3944,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -4067,7 +4067,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -4109,7 +4109,7 @@ extension ConversationDataFlowTests {
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -4156,7 +4156,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -4218,7 +4218,7 @@ extension ConversationDataFlowTests {
         )
         let contextStore = SessionContextStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             contextStore: contextStore,

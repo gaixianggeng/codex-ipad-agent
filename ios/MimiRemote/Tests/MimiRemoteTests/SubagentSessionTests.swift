@@ -250,7 +250,7 @@ extension ConversationDataFlowTests {
 
     func testSessionStoreSparseMergePreservesKnownSubagentOwnership() {
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -312,7 +312,7 @@ extension ConversationDataFlowTests {
         child.parentThreadID = parent.id
         child.isSubagent = true
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [parent]) }

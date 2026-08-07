@@ -25,6 +25,33 @@ struct SessionArchiveMutation: Equatable {
     let target: SessionArchivePreferenceState
 }
 
+/// `applyEventReducerOutput` 内部的会话工作副本。
+///
+/// 一个 runtime event 可能同时更新 status、active turn、审批卡和列表预览。
+/// 这些更新必须按既有分组顺序彼此可见，但不能让每一步都触发整套索引/排序。
+/// 这里只复制会话数组；lookup 仍由 Store 增量维护，避免 batch 与 Store 同时持有
+/// Dictionary 导致每个 staged mutation 都触发整表 CoW。
+final class EventReducerSessionMutationBatch {
+    var sessions: [AgentSession]
+
+    init(sessions: [AgentSession]) {
+        self.sessions = sessions
+    }
+
+    func replace(at index: Int, with session: AgentSession) -> Bool {
+        guard sessions.indices.contains(index), sessions[index] != session else {
+            return false
+        }
+        sessions[index] = session
+        return true
+    }
+
+    func insert(_ session: AgentSession) {
+        // 与 SessionStore.upsert 保持一致：新会话放在数组头部。
+        sessions.insert(session, at: 0)
+    }
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published var projects: [AgentProject] = [] {
@@ -355,6 +382,14 @@ final class SessionStore: ObservableObject {
     var sidebarProjectsByID: [String: AgentProject] = [:]
     var sessionsByID: [SessionID: AgentSession] = [:]
     var sessionIndexByID: [SessionID: Int] = [:]
+    // 只在 applyEventReducerOutput 的同步作用域存在；不能跨 event 或 await。
+    // lookup 在每个 staged mutation 后同步，保证 storage-protection helper 读取到最新状态。
+    var eventReducerSessionMutationBatch: EventReducerSessionMutationBatch?
+    // @Published 在实际写入 sessions 前同步通知。通知回调若重入 reducer，不能直接从旧
+    // canonical sessions 开新批次，否则外层赋值会覆盖内层结果；先排队，待提交完成后顺序处理。
+    var isPublishingEventReducerSessions = false
+    var deferredEventReducerOutputs: [EventReducerOutput] = []
+    var isDrainingDeferredEventReducerOutputs = false
     var sortedAllSessions: [AgentSession] = []
     var sortedSessionsByProjectID: [String: [AgentSession]] = [:]
     var previewSessionsByProjectID: [String: [AgentSession]] = [:]

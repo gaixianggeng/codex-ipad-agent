@@ -60,7 +60,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -116,7 +116,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -185,7 +185,7 @@ extension ConversationDataFlowTests {
             )
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
