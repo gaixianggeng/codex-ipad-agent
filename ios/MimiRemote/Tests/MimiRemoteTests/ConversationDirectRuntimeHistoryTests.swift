@@ -2290,7 +2290,7 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(exhaustedDisplay.isExhausted)
         let exhaustedNotice = try XCTUnwrap(CodexQuotaNotice.make(rateLimit: exhaustedLimit, errorMessage: nil, now: now))
         XCTAssertTrue(exhaustedNotice.blocksSending)
-        XCTAssertEqual(exhaustedNotice.title, L10n.text("ui.codex_message_quota_has_been_exhausted"))
+        XCTAssertEqual(exhaustedNotice.title, L10n.format("ui.value_message_quota_has_been_exhausted", "Codex"))
 
         let secondaryResetEpoch: Int64 = 1_780_497_900
         let secondaryDriven = try XCTUnwrap(CodexUsageDisplaySummary.make(
