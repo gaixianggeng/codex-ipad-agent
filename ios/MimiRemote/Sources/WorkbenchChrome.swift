@@ -1,5 +1,82 @@
 import SwiftUI
 
+enum AppDestination: Hashable {
+    case sessions
+    case workspaces
+    case me
+    case session(SessionID)
+    case subagent(parentID: SessionID, childID: SessionID)
+}
+
+/// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
+/// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
+@MainActor
+final class WorkbenchNavigationBindingScheduler {
+    enum Lane: Hashable {
+        case splitSelection
+        case compactTab
+        case compactSessionsPath
+        case compactWorkspacesPath
+    }
+
+    private var revisions: [Lane: UInt] = [:]
+
+    func schedule(
+        on lane: Lane,
+        action: @escaping @MainActor () -> Void
+    ) {
+        let revision = revisions[lane, default: 0] &+ 1
+        revisions[lane] = revision
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.revisions[lane] == revision else {
+                return
+            }
+            self.revisions[lane] = nil
+            action()
+        }
+    }
+}
+
+enum CompactWorkbenchTab: Hashable {
+    case sessions
+    case workspaces
+    case me
+
+    var title: String {
+        switch self {
+        case .sessions: return L10n.text("ui.session")
+        case .workspaces: return L10n.text("ui.workspace")
+        case .me: return L10n.text("ui.me")
+        }
+    }
+
+    var systemImage: String {
+        navigationIcon.normalSystemName
+    }
+
+    var navigationIcon: WorkbenchNavigationIcon {
+        switch self {
+        case .sessions: return .sessions
+        case .workspaces: return .workspaces
+        case .me: return .me
+        }
+    }
+}
+
+enum WorkbenchNavigationEffect: Equatable {
+    case returnToSessionList
+    case selectSession(SessionID)
+}
+
+enum WorkbenchNavigationEvent: Equatable {
+    case open(AppDestination, source: WorkbenchRootPage?)
+    case synchronize(WorkbenchRestorationRoute)
+    case selectionCommitted(SessionSelectionCommit)
+    case compactPathChanged(tab: CompactWorkbenchTab, path: [AppDestination])
+    case compactTabChanged(CompactWorkbenchTab)
+    case sessionSelectionFinished(SessionID)
+}
+
 /// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
 /// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
 struct WorkbenchNavigationState: Equatable {
@@ -486,6 +563,7 @@ struct WorkbenchLayout: Equatable {
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
     let usesFloatingSidebarSurface: Bool
+    let prefersSessionTableDensity: Bool
 
     var usesSheetInspectorNavigation: Bool {
         !usesCompactNavigation && !usesAttachedInspector
@@ -528,6 +606,9 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        // iPad mini 竖屏虽然会退成单列导航，但 744/768pt 仍足以承载与横屏
+        // 收起侧栏后一致的会话表格；只有真正窄的分屏 / Slide Over 才回退 compact。
+        prefersSessionTableDensity = isPad && containerWidth >= 700
     }
 }
 

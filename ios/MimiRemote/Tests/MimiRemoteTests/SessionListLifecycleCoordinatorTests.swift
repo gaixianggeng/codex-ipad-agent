@@ -56,6 +56,26 @@ final class SessionListLifecycleCoordinatorTests: XCTestCase {
         XCTAssertNil(tracker.observe([observation("session", .failure)]))
     }
 
+    func testTransitionResultExposesOnlyArmedCompletedSessionIDs() {
+        var tracker = SessionLifecycleFeedbackTracker()
+
+        XCTAssertTrue(
+            tracker.observeTransitions([
+                observation("armed", .waiting),
+                observation("history", .completion),
+            ]).completedSessionIDs.isEmpty
+        )
+
+        let result = tracker.observeTransitions([
+            observation("armed", .completion),
+            observation("history", .completion),
+        ])
+
+        XCTAssertEqual(result.completedSessionIDs, ["armed"])
+        XCTAssertEqual(result.feedback?.pattern, MimiHapticPattern.notificationSuccess)
+        XCTAssertTrue(result.failedSessionIDs.isEmpty)
+    }
+
     func testFailedSessionCanRearmAndCompleteAfterRecovery() {
         var tracker = SessionLifecycleFeedbackTracker()
 
