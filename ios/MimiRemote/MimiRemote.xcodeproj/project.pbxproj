@@ -1694,7 +1694,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Resources/MimiRemote.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100068;
+				CURRENT_PROJECT_VERSION = 100070;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
@@ -1825,7 +1825,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Resources/MimiRemote.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100068;
+				CURRENT_PROJECT_VERSION = 100070;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
@@ -1872,7 +1872,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = WidgetExtension/MimiCarStatusWidget.entitlements;
-				CURRENT_PROJECT_VERSION = 100068;
+				CURRENT_PROJECT_VERSION = 100070;
 				INFOPLIST_FILE = WidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1960,7 +1960,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = WidgetExtension/MimiCarStatusWidget.entitlements;
-				CURRENT_PROJECT_VERSION = 100068;
+				CURRENT_PROJECT_VERSION = 100070;
 				INFOPLIST_FILE = WidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
