@@ -1437,6 +1437,10 @@ enum WorkspaceSessionGroup: String, CaseIterable {
         }
         return session.isRunning ? .running : .recent
     }
+
+    static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {
+        allCases.filter(groups.contains)
+    }
 }
 
 /// 会话行左槽只表达执行状态，未读改由右端紫点承担，避免同一颗圆点既像状态又像项目色。
@@ -1597,20 +1601,20 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
             WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
         }
         let branchValues = recentSessions.map(\.gitBranchName)
+        let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
 
         VStack(alignment: .leading, spacing: 18) {
-            ForEach(WorkspaceSessionGroup.allCases, id: \.self) { group in
+            ForEach(populatedGroups, id: \.self) { group in
                 let sessions = grouped[group] ?? []
-                if !sessions.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        sectionHeader(group, count: sessions.count, tokens: tokens)
-                        sessionGroupBody(
-                            group,
-                            sessions: sessions,
-                            branchValues: branchValues,
-                            tokens: tokens
-                        )
-                    }
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionHeader(group, count: sessions.count, tokens: tokens)
+                    sessionGroupBody(
+                        group,
+                        sessions: sessions,
+                        branchValues: branchValues,
+                        showsLoadMore: group == populatedGroups.last,
+                        tokens: tokens
+                    )
                 }
             }
         }
@@ -1646,6 +1650,7 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
         branchValues: [String?],
+        showsLoadMore: Bool,
         tokens: ThemeTokens
     ) -> some View {
         let firstStaleIndex = group == .recent
@@ -1680,7 +1685,8 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 .accessibilityIdentifier("workspace.session.\(session.id)")
             }
 
-            if group == .recent, canLoadMoreSessions || isLoadingMoreSessions {
+            // 加载入口跟随当前最后一个可见分组；即使首屏全是待处理或运行会话，也能继续取回历史。
+            if showsLoadMore, canLoadMoreSessions || isLoadingMoreSessions {
                 Divider()
                     .overlay(tokens.border.opacity(0.62))
 
@@ -1766,9 +1772,8 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
                 .font(themeStore.uiFont(.caption2, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .padding(.horizontal, 8)
-                // 文案缺口必须与所在分组面板同色；使用更亮的 contentPanelBackground
-                // 会在深色最近会话中形成一条突兀的横向亮带。
-                .background(tokens.surface)
+                // 文案缺口必须与分组面板共用同一个 token，深色模式才不会露出矩形色块。
+                .background(tokens.contentPanelBackground)
                 .fixedSize()
         }
         .padding(.leading, WorkspaceSessionRowMetrics.separatorInset)

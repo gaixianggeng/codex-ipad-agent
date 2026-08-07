@@ -2064,6 +2064,19 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceLoadMoreTargetsLastPopulatedGroupWhenRecentIsMissing() {
+        let withoutRecent = WorkspaceSessionGroup.orderedPopulatedGroups(
+            from: [.needsAttention, .running]
+        )
+        XCTAssertEqual(withoutRecent, [.needsAttention, .running])
+        XCTAssertEqual(withoutRecent.last, .running)
+
+        let withRecent = WorkspaceSessionGroup.orderedPopulatedGroups(
+            from: [.running, .recent]
+        )
+        XCTAssertEqual(withRecent.last, .recent)
+    }
+
     func testStartNewSessionWithClaudeRuntimeCarriesRuntimeProviderInCreatePayload() async throws {
         let project = makeProject(id: "proj_claude_entry")
         let created = makeSession(id: "claude_created", projectID: project.id, title: "Claude 会话", status: "closed", source: "claude")
