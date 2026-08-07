@@ -71,6 +71,64 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(claudeLayout.standardContentHeight, 236)
     }
 
+    func testCodexStandardMenuUsesModelSpecificFourthEffortAndInlineLabel() {
+        let options = CodexAppServerModelOption.builtInFallback
+        let sol = options[0]
+        let terra = options[1]
+        let luna = options[2]
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
+
+        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .ultra])
+        XCTAssertEqual(layout.modelRowCount, 3)
+        XCTAssertEqual(layout.effortColumnCount, 4)
+        XCTAssertEqual(
+            layout.selection(modelRow: 2, effortColumn: 3),
+            ModelReasoningGridSelection(modelID: luna.model, effort: .max)
+        )
+        XCTAssertEqual(layout.efforts(for: luna), [.medium, .high, .xhigh, .max])
+        XCTAssertNil(layout.inlineEffortLabel(for: sol, column: 3))
+        XCTAssertNil(layout.inlineEffortLabel(for: luna, column: 2))
+        XCTAssertEqual(layout.inlineEffortLabel(for: luna, column: 3), "max")
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.allSupportedEfforts(for: sol),
+            [.low, .medium, .high, .xhigh, .max, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.allSupportedEfforts(for: terra),
+            [.low, .medium, .high, .xhigh, .max, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.allSupportedEfforts(for: luna),
+            [.low, .medium, .high, .xhigh, .max]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: sol, layout: layout),
+            [.medium, .high, .xhigh, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: terra, layout: layout),
+            [.medium, .high, .xhigh, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: luna, layout: layout),
+            [.medium, .high, .xhigh, .max]
+        )
+        XCTAssertTrue(ModelReasoningGridCatalog.supports(.ultra, option: sol))
+        XCTAssertFalse(ModelReasoningGridCatalog.supports(.ultra, option: luna))
+        XCTAssertTrue(ModelReasoningGridCatalog.isStandardEffortAvailable(.max, option: luna, layout: layout))
+        XCTAssertFalse(ModelReasoningGridCatalog.isStandardEffortAvailable(.max, option: sol, layout: layout))
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.normalizedVisibleEffort(
+                option: luna,
+                current: .ultra,
+                layout: layout
+            ),
+            .medium
+        )
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
+    }
+
     func testModelPickerContentHeightTracksVisibleModelRows() {
         let oneModel = [
             CodexAppServerModelOption(id: "model-1", title: "Model 1")

@@ -1376,7 +1376,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
     }
 
-    func testCodexStandardMenuUsesModelSpecificFourthEffortAndInlineLabel() {
+    func testCodexStandardMenuKeepsFullCapabilitiesButHidesLowAndMax() {
         let options = CodexAppServerModelOption.builtInFallback
         let sol = options[0]
         let terra = options[1]
@@ -1388,15 +1388,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(layout.effortColumnCount, 4)
         XCTAssertEqual(
             layout.selection(modelRow: 2, effortColumn: 3),
-            ModelReasoningGridSelection(modelID: luna.model, effort: .max)
+            ModelReasoningGridSelection(modelID: luna.model, effort: .ultra)
         )
-        XCTAssertEqual(
-            layout.efforts(for: luna),
-            [.medium, .high, .xhigh, .max]
-        )
-        XCTAssertNil(layout.inlineEffortLabel(for: sol, column: 3))
-        XCTAssertNil(layout.inlineEffortLabel(for: luna, column: 2))
-        XCTAssertEqual(layout.inlineEffortLabel(for: luna, column: 3), "max")
         XCTAssertEqual(
             ModelReasoningGridCatalog.allSupportedEfforts(for: sol),
             [.low, .medium, .high, .xhigh, .max, .ultra]
@@ -1419,7 +1412,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.visibleEfforts(for: luna, layout: layout),
-            [.medium, .high, .xhigh, .max]
+            [.medium, .high, .xhigh]
         )
         XCTAssertEqual(sol.defaultReasoningEffort, "xhigh")
         XCTAssertTrue(sol.isDefault)
@@ -1427,7 +1420,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(luna.defaultReasoningEffort, "medium")
         XCTAssertTrue(ModelReasoningGridCatalog.supports(.ultra, option: sol))
         XCTAssertFalse(ModelReasoningGridCatalog.supports(.ultra, option: luna))
-        XCTAssertTrue(ModelReasoningGridCatalog.isStandardEffortAvailable(.max, option: luna, layout: layout))
         XCTAssertFalse(ModelReasoningGridCatalog.isStandardEffortAvailable(.max, option: sol, layout: layout))
         XCTAssertEqual(
             ModelReasoningGridCatalog.normalizedVisibleEffort(
