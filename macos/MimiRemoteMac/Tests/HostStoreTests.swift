@@ -43,6 +43,29 @@ final class HostStoreTests: XCTestCase {
         )
     }
 
+    func testBootstrapRejectsAdHocSnapshotBeforeTouchingRegisteredAgent() async {
+        let events = EventRecorder()
+        let message = "当前 App 是未签名或 ad-hoc 结构快照，不能启动 macOS 后台服务。"
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            agentConfigurationError: { message },
+            status: {
+                events.append("status")
+                return Self.stoppedStatus
+            },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [])
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .failed(message))
+        XCTAssertEqual(store.lastError, message)
+    }
+
     func testPartialRegistrationFailureTriggersOneBoundedReregistration() async {
         let events = EventRecorder()
         var registrationState = ServiceRegistrationState.notRegistered
@@ -104,6 +127,36 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
     }
 
+    func testEnabledRegistrationWithStoppedProcessRepairsWithoutUserAction() async {
+        let events = EventRecorder()
+        let statusCalls = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: {
+                statusCalls.increment() == 1 ? Self.stoppedStatus : Self.readyStatus
+            },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["unregister-mac", "register-mac"])
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertNil(store.lastError)
+    }
+
     func testAgentConfigurationValidatorChecksPlistAndExecutable() throws {
         let fileManager = FileManager.default
         let bundleURL = fileManager.temporaryDirectory
@@ -140,7 +193,55 @@ final class HostStoreTests: XCTestCase {
         try Data().write(to: executableURL)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
 
-        XCTAssertNil(ServiceManagementClient.validateAgentConfiguration(bundleURL: bundleURL))
+        let signingIdentity: (URL) -> CodeSigningIdentity? = { url in
+            if url == bundleURL {
+                return CodeSigningIdentity(
+                    identifier: "com.gaixianggeng.mimi.mac",
+                    teamIdentifier: "9HZ89R58PZ"
+                )
+            }
+            if url == executableURL {
+                return CodeSigningIdentity(
+                    identifier: "com.gaixianggeng.mimi.mac.agentd",
+                    teamIdentifier: "9HZ89R58PZ"
+                )
+            }
+            return nil
+        }
+        XCTAssertNil(
+            ServiceManagementClient.validateAgentConfiguration(
+                bundleURL: bundleURL,
+                signingIdentityProvider: signingIdentity
+            )
+        )
+        XCTAssertTrue(
+            ServiceManagementClient.validateAgentConfiguration(
+                bundleURL: bundleURL,
+                signingIdentityProvider: { url in
+                    if url == bundleURL {
+                        return CodeSigningIdentity(
+                            identifier: "com.gaixianggeng.mimi.mac",
+                            teamIdentifier: nil
+                        )
+                    }
+                    return signingIdentity(url)
+                }
+            )?.contains("ad-hoc") == true
+        )
+        XCTAssertTrue(
+            ServiceManagementClient.validateAgentConfiguration(
+                bundleURL: bundleURL,
+                signingIdentityProvider: { url in
+                    if url == executableURL {
+                        return CodeSigningIdentity(
+                            identifier: "com.gaixianggeng.mimi.mac.agentd",
+                            teamIdentifier: "OTHERTEAM"
+                        )
+                    }
+                    return signingIdentity(url)
+                }
+            )?.contains("签名团队不一致") == true
+        )
     }
 
     func testBootstrapRequiresSetupWhenConfigIsMissing() async {
@@ -182,6 +283,39 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(store.claudeEnabled)
         XCTAssertEqual(store.owner, .macApp)
         XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testFirstLaunchConfiguresClaudeBeforeSingleAgentRegistration() async {
+        let events = EventRecorder()
+        var registrationState = ServiceRegistrationState.notRegistered
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.statusWithClaude(enabled: true, state: .connected) },
+            registerAgent: {
+                events.append("register-mac")
+                registrationState = .enabled
+            },
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .automatic,
+                    previousEnabled: false,
+                    previousPreference: .automatic,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["configure-auto", "register-mac"])
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertTrue(store.claudeEnabled)
+        XCTAssertEqual(store.status?.runtimeStatus?.runtimes.first?.state, .connected)
     }
 
     func testDisablingClaudeReloadsServiceAndWaitsForDisabledRuntime() async {
@@ -301,6 +435,26 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.owner, .macApp)
         XCTAssertEqual(store.lifecycle, .ready)
         XCTAssertNotNil(store.pairing)
+    }
+
+    func testTakeoverRejectsInvalidAppBeforeStoppingHomebrew() async {
+        let events = EventRecorder()
+        let message = "当前 App 是未签名或 ad-hoc 结构快照，不能启动 macOS 后台服务。"
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            agentConfigurationError: { message },
+            registerAgent: { events.append("register-mac") },
+            homebrewStop: { events.append("stop-homebrew") }
+        )
+        await store.bootstrap()
+
+        await store.takeOverHomebrew()
+
+        XCTAssertEqual(events.values, [])
+        XCTAssertEqual(store.owner, .homebrew)
+        XCTAssertEqual(store.lifecycle, .migrationRequired)
+        XCTAssertEqual(store.lastError, message)
     }
 
     func testFailedTakeoverRestoresHomebrewAutomatically() async {
@@ -804,6 +958,20 @@ final class HostStoreTests: XCTestCase {
         )
     }()
 
+    private nonisolated static let stoppedStatus = AgentStatus(
+        processOK: false,
+        serviceOK: false,
+        processError: "agentd 未运行",
+        serviceError: "readyz 不可用",
+        version: "0.1.0",
+        endpoint: "http://127.0.0.1:8787",
+        configPath: "/tmp/config.json",
+        projects: 1,
+        doctorOK: true,
+        doctor: readyStatus.doctor,
+        pairExpires: nil
+    )
+
     private nonisolated static func statusWithClaude(
         enabled: Bool,
         state: AgentRuntimeConnectionState
@@ -905,6 +1073,12 @@ private final class CallCounter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         value += 1
+        return value
+    }
+
+    var current: Int {
+        lock.lock()
+        defer { lock.unlock() }
         return value
     }
 }

@@ -68,6 +68,24 @@ bash scripts/build-macos-installer.sh \
 bash scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
 ```
 
+`--snapshot` 产物是 ad-hoc 签名的结构快照，只能验证 universal 二进制、DMG、
+LaunchAgent 和签名封装，不能拖入 Applications 做真实初始化或启动
+`SMAppService`。需要在本机验证首次打开、服务注册和 Claude 自动启动时，使用
+Keychain 中的 Apple Development 身份生成同团队签名包：
+
+```bash
+bash scripts/build-macos-installer.sh \
+  --development-signing \
+  --version 0.2.0 \
+  --build-number 2 \
+  --output-dir dist-macos-development
+bash scripts/check-macos-installer.sh \
+  --require-team-signing \
+  dist-macos-development/Mimi-Remote-Mac-Development.dmg
+```
+
+开发签名包只用于签名团队成员的本机验收，没有 Apple 公证，不得公开分发。
+
 正式构建必须提供 Developer ID PKCS#12 和 App Store Connect Notary API 凭据；脚本拒绝把 ad-hoc 快照作为正式包生成。
 
 ### 首次启动

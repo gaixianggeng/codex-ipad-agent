@@ -8,12 +8,14 @@ OUTPUT_DIR="$ROOT_DIR/dist-macos"
 VERSION=""
 BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"
 SNAPSHOT=0
+DEVELOPMENT_SIGNING=0
 
 usage() {
   cat <<'EOF'
 用法：
   bash ./scripts/build-macos-installer.sh --version 0.2.0 [--build-number 1] [--output-dir dist-macos]
   bash ./scripts/build-macos-installer.sh --snapshot --version 0.2.0 [--output-dir dist-macos]
+  bash ./scripts/build-macos-installer.sh --development-signing --version 0.2.0 [--output-dir dist-macos]
 
 正式构建需要以下环境变量：
   MACOS_SIGN_P12             Developer ID Application 证书和私钥的 base64 PKCS#12
@@ -22,7 +24,9 @@ usage() {
   MACOS_NOTARY_KEY_ID        API Key ID
   MACOS_NOTARY_ISSUER_ID     App Store Connect Issuer ID
 
---snapshot 使用临时 ad-hoc 签名，只验证 universal App/DMG 构建，不可公开分发。
+--snapshot 使用临时 ad-hoc 签名，只验证 universal App/DMG 结构，不能安装运行后台服务。
+--development-signing 自动使用 Keychain 中的 Apple Development 身份，生成仅供本机
+初始化与 ServiceManagement 验收的同团队签名包；不做公证，不可公开分发。
 EOF
 }
 
@@ -44,6 +48,10 @@ while [[ $# -gt 0 ]]; do
       SNAPSHOT=1
       shift
       ;;
+    --development-signing)
+      DEVELOPMENT_SIGNING=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -54,6 +62,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$SNAPSHOT" == "1" && "$DEVELOPMENT_SIGNING" == "1" ]]; then
+  echo "Mac 安装包构建失败：--snapshot 与 --development-signing 不能同时使用。" >&2
+  exit 2
+fi
 
 VERSION="${VERSION#v}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -75,7 +88,7 @@ if [[ ! -f "$PROJECT_PATH/project.pbxproj" ]]; then
   echo "Mac 安装包构建失败：缺少 $PROJECT_PATH。" >&2
   exit 1
 fi
-if [[ "$SNAPSHOT" != "1" ]]; then
+if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
   bash "$ROOT_DIR/scripts/check-macos-release-signing.sh"
 fi
 
@@ -210,7 +223,7 @@ CODESIGN_IDENTITY="-"
 CODESIGN_TIMESTAMP=(--timestamp=none)
 NOTARY_KEY_PATH=""
 
-if [[ "$SNAPSHOT" != "1" ]]; then
+if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
   for secret_name in MACOS_SIGN_P12 MACOS_SIGN_PASSWORD MACOS_NOTARY_KEY MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID; do
     if [[ -z "${!secret_name:-}" ]]; then
       echo "Mac 安装包构建失败：缺少 ${secret_name}。" >&2
@@ -260,10 +273,17 @@ if [[ "$SNAPSHOT" != "1" ]]; then
     exit 1
   fi
   CODESIGN_TIMESTAMP=(--timestamp)
+elif [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
+  CODESIGN_IDENTITY="$(security find-identity -v -p codesigning \
+    | awk '/Apple Development:/ { print $2; exit }')"
+  if [[ -z "$CODESIGN_IDENTITY" ]]; then
+    echo "Mac 安装包构建失败：Keychain 中没有可用的 Apple Development 签名身份。" >&2
+    exit 1
+  fi
 fi
 
 echo "==> 从内到外签名 Claude bridge、agentd 与 App"
-if [[ "$SNAPSHOT" == "1" ]]; then
+if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.claude-bridge \
@@ -322,7 +342,7 @@ hdiutil create \
   -imagekey zlib-level=9 \
   "$DMG_PATH"
 
-if [[ "$SNAPSHOT" != "1" ]]; then
+if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
   echo "==> 签名并提交 Apple Notary Service"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -336,8 +356,13 @@ if [[ "$SNAPSHOT" != "1" ]]; then
   spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
 fi
 
-FINAL_DMG="$OUTPUT_DIR/Mimi-Remote-Mac.dmg"
-FINAL_SHA="$OUTPUT_DIR/Mimi-Remote-Mac.dmg.sha256"
+if [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
+  FINAL_DMG="$OUTPUT_DIR/Mimi-Remote-Mac-Development.dmg"
+  FINAL_SHA="$OUTPUT_DIR/Mimi-Remote-Mac-Development.dmg.sha256"
+else
+  FINAL_DMG="$OUTPUT_DIR/Mimi-Remote-Mac.dmg"
+  FINAL_SHA="$OUTPUT_DIR/Mimi-Remote-Mac.dmg.sha256"
+fi
 ditto "$DMG_PATH" "$FINAL_DMG"
 (
   cd "$OUTPUT_DIR"
@@ -346,5 +371,7 @@ ditto "$DMG_PATH" "$FINAL_DMG"
 
 echo "Mac 安装包已生成：$FINAL_DMG"
 if [[ "$SNAPSHOT" == "1" ]]; then
-  echo "注意：这是 ad-hoc 签名快照，只用于构建验证，不可公开分发。"
+  echo "注意：这是 ad-hoc 结构快照，不能用于真实安装或启动 macOS 后台服务。"
+elif [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
+  echo "注意：这是同团队开发签名包，仅用于本机初始化验收；未公证，不可公开分发。"
 fi

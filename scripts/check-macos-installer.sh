@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REQUIRE_NOTARIZATION=0
+REQUIRE_TEAM_SIGNING=0
 DMG_PATH=""
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -27,7 +28,7 @@ version_at_least() {
 usage() {
   cat <<'EOF'
 用法：
-  bash ./scripts/check-macos-installer.sh [--require-notarization] <Mimi-Remote-Mac.dmg>
+  bash ./scripts/check-macos-installer.sh [--require-team-signing] [--require-notarization] <Mimi-Remote-Mac.dmg>
 EOF
 }
 
@@ -35,6 +36,11 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --require-notarization)
       REQUIRE_NOTARIZATION=1
+      REQUIRE_TEAM_SIGNING=1
+      shift
+      ;;
+    --require-team-signing)
+      REQUIRE_TEAM_SIGNING=1
       shift
       ;;
     -h|--help)
@@ -150,13 +156,24 @@ if [[ "$app_identifier" != "com.gaixianggeng.mimi.mac" \
   exit 1
 fi
 
+app_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$app_signing_details")"
+agent_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$agent_signing_details")"
+bridge_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$bridge_signing_details")"
+if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
+  if [[ ! "$app_team_identifier" =~ ^[A-Z0-9]+$ \
+    || "$agent_team_identifier" != "$app_team_identifier" \
+    || "$bridge_team_identifier" != "$app_team_identifier" ]]; then
+    echo "Mac 安装包校验失败：App、agentd 与 Claude bridge 必须使用同一非空 Team ID 签名。" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
   codesign --verify --strict --verbose=2 "$DMG_PATH"
   if ! grep -Fq 'Authority=Developer ID Application:' <<<"$app_signing_details" \
-    || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$app_signing_details" \
-    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$bridge_signing_details" \
-    || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$bridge_signing_details"; then
-    echo "Mac 安装包校验失败：App 或 Claude bridge 不是有效的 Developer ID Application 签名。" >&2
+    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$agent_signing_details" \
+    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$bridge_signing_details"; then
+    echo "Mac 安装包校验失败：App、agentd 或 Claude bridge 不是有效的 Developer ID Application 签名。" >&2
     exit 1
   fi
   xcrun stapler validate "$DMG_PATH"
@@ -164,4 +181,8 @@ if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
   spctl --assess --type execute --verbose=4 "$APP_PATH"
 fi
 
-echo "Mac 安装包校验通过：universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整。"
+team_summary=""
+if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
+  team_summary="、Team ID ${app_team_identifier} 一致"
+fi
+echo "Mac 安装包校验通过：universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、LaunchAgent、拖放入口和签名结构完整${team_summary}。"

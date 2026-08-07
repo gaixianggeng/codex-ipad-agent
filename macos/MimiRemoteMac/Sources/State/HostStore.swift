@@ -129,12 +129,21 @@ final class HostStore {
             return
         }
 
-        await enableLoginLaunchBestEffort()
         if homebrewLoaded {
+            await enableLoginLaunchBestEffort()
             owner = .homebrew
             lifecycle = .migrationRequired
             await refreshHomebrewStatus()
         } else {
+            do {
+                try validateMacAgentConfiguration()
+            } catch {
+                owner = .none
+                fail(error)
+                startMonitoring()
+                return
+            }
+            await enableLoginLaunchBestEffort()
             let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
             await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
         }
@@ -160,6 +169,7 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
+            try validateMacAgentConfiguration()
             let nextPairing = try await agent.setup(workspaceRoot)
             pairing = nextPairing
             pairingNetwork = nextPairing.network
@@ -176,6 +186,15 @@ final class HostStore {
         guard !isBusy, homebrewLoaded else { return }
         guard let oldAgent = homebrew.installedAgentBinary() else {
             fail(HomebrewServiceError.commandFailed("找不到 Homebrew 安装的 agentd，无法安全接管。"))
+            return
+        }
+        do {
+            // 在停止健康的 Homebrew 服务之前完成包资源与签名预检；无效测试包
+            // 必须原地失败，不能让用户从可用服务跌入不可恢复状态。
+            try validateMacAgentConfiguration()
+        } catch {
+            lastError = error.localizedDescription
+            lifecycle = .migrationRequired
             return
         }
 
@@ -450,6 +469,7 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
+            try validateMacAgentConfiguration()
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
             try await registerMacAgentAndWaitForReady()
         } catch {
@@ -529,6 +549,16 @@ final class HostStore {
     }
 
     private func startMacAgentIfNeeded(reloadConfiguration: Bool = false) async {
+        do {
+            // `.enabled` 也可能只是遗留的 BTM 记录；先验证当前包的签名身份，
+            // 避免 ad-hoc 二进制进入 unregister/register 和 launchd 重试循环。
+            try validateMacAgentConfiguration()
+        } catch {
+            owner = .none
+            fail(error)
+            return
+        }
+
         switch services.agentStatus() {
         case .enabled:
             owner = .macApp
@@ -568,7 +598,13 @@ final class HostStore {
 
             status = current
             doctor = current.doctor
-            if current.hasAgentVersionMismatch {
+            if !current.processOK {
+                // status 命令本身可以成功，但它可能明确报告 resident agentd 未运行。
+                // 首次打开必须把这种状态当作启动失败，自动做一次有界换代，而不是
+                // 落到 stopped 后要求用户点击“修复并启动服务”。
+                let detail = current.processError ?? current.serviceError ?? "agentd 进程未启动。"
+                await repairEnabledMacAgent(after: AgentClientError.commandFailed(detail))
+            } else if current.hasAgentVersionMismatch {
                 // 覆盖安装不会自动替换 launchd 已映射的旧二进制。只在 App
                 // 启动阶段发现明确版本漂移时做一次受控换代，避免长期半更新。
                 lifecycle = .starting
@@ -655,6 +691,7 @@ final class HostStore {
     }
 
     private func reloadMacAgentForConfigurationChange() async throws {
+        try validateMacAgentConfiguration()
         lifecycle = .starting
         let endpoint: String?
         if let currentEndpoint = status?.endpoint {
@@ -743,6 +780,7 @@ final class HostStore {
     private func registerMacAgentAndWaitForReady(
         allowAutomaticRepair: Bool = true
     ) async throws {
+        try validateMacAgentConfiguration()
         do {
             try services.registerAgent()
             try await waitForMacAgentReady()
@@ -1066,6 +1104,12 @@ final class HostStore {
         lifecycle = .failed(error.localizedDescription)
     }
 
+    private func validateMacAgentConfiguration() throws {
+        if let configurationError = services.agentConfigurationError() {
+            throw ServiceLifecycleError.invalidConfiguration(configurationError)
+        }
+    }
+
 #if DEBUG
     static func preview(_ lifecycle: HostLifecycleState) -> HostStore {
         let check = AgentCheck(name: "codex", ok: true, level: "", message: "Codex CLI 可执行", fix: nil)
@@ -1230,6 +1274,7 @@ final class HostStore {
 }
 
 private enum ServiceLifecycleError: LocalizedError {
+    case invalidConfiguration(String)
     case unregisterTimedOut
     case stopTimedOut
     case requiresApproval
@@ -1238,6 +1283,8 @@ private enum ServiceLifecycleError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .invalidConfiguration(let detail):
+            detail
         case .unregisterTimedOut:
             "服务停止超时，未继续启动；请稍后重试。"
         case .stopTimedOut:
