@@ -445,6 +445,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let directoryListResults: [String: Result<DirectoryListResponse, Error>]
     let fileReadResults: [String: Result<FileReadResponse, Error>]
     let historyMediaResults: [String: Result<FileReadResponse, Error>]
+    let historyOutputResults: [String: Result<FileReadResponse, Error>]
     let commandActionResults: [String: Result<[AgentCommandAction], Error>]
     let commandActionRunResults: [String: Result<CommandActionRunResponse, Error>]
     let gitStatusResults: [String: Result<GitStatusResponse, Error>]
@@ -463,6 +464,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
     let accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)?
+    /// 需要区分 unsupported / failed 时用这个；它优先于 snapshot 便捷 handler。
+    let accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let externalActivityResponses: [ExternalActivityResponse?]
     var requestedProjectIDs: [String?] {
@@ -496,6 +499,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedDirectoryPaths: [String] = []
     var requestedFileReadPaths: [String] = []
     var requestedHistoryMediaIDs: [String] = []
+    var requestedHistoryOutputIDs: [String] = []
     var requestedCommandActionPaths: [String] = []
     var requestedCommandActionRuns: [RequestedCommandActionRun] = []
     var requestedGitStatusPaths: [String] = []
@@ -556,6 +560,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         directoryListResults: [String: Result<DirectoryListResponse, Error>] = [:],
         fileReadResults: [String: Result<FileReadResponse, Error>] = [:],
         historyMediaResults: [String: Result<FileReadResponse, Error>] = [:],
+        historyOutputResults: [String: Result<FileReadResponse, Error>] = [:],
         commandActionResults: [String: Result<[AgentCommandAction], Error>] = [:],
         commandActionRunResults: [String: Result<CommandActionRunResponse, Error>] = [:],
         gitStatusResults: [String: Result<GitStatusResponse, Error>] = [:],
@@ -574,6 +579,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)? = nil,
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
+        accountTokenUsageFetchHandler: (() async throws -> AccountTokenUsageFetch)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
         externalActivityResponses: [ExternalActivityResponse?] = []
     ) {
@@ -612,6 +618,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.directoryListResults = directoryListResults
         self.fileReadResults = fileReadResults
         self.historyMediaResults = historyMediaResults
+        self.historyOutputResults = historyOutputResults
         self.commandActionResults = commandActionResults
         self.commandActionRunResults = commandActionRunResults
         self.gitStatusResults = gitStatusResults
@@ -630,6 +637,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitHandler = rateLimitHandler
         self.controlledGlobalSessionsHandler = controlledGlobalSessionsHandler
         self.accountTokenUsageHandler = accountTokenUsageHandler
+        self.accountTokenUsageFetchHandler = accountTokenUsageFetchHandler
         self.threadSearchHandler = threadSearchHandler
         self.externalActivityResponses = externalActivityResponses
     }
@@ -670,8 +678,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         return rateLimitsByRuntime[runtimeProvider]
     }
 
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
-        try await accountTokenUsageHandler?()
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
+        if let accountTokenUsageFetchHandler {
+            return try await accountTokenUsageFetchHandler()
+        }
+        guard let accountTokenUsageHandler else { return .unsupported }
+        guard let snapshot = try await accountTokenUsageHandler() else { return .unsupported }
+        return .snapshot(snapshot)
     }
 
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
@@ -815,6 +828,18 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func readHistoryMedia(id: String) async throws -> FileReadResponse {
         requestedHistoryMediaIDs.append(id)
         switch historyMediaResults[id] {
+        case .success(let response):
+            return response
+        case .failure(let error):
+            throw error
+        case .none:
+            throw MockError.unimplemented
+        }
+    }
+
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        requestedHistoryOutputIDs.append(id)
+        switch historyOutputResults[id] {
         case .success(let response):
             return response
         case .failure(let error):
@@ -1715,6 +1740,26 @@ func payloadContainsSkill(_ payload: CodexAppServerTurnPayload?, name expectedNa
         }
         return false
     } ?? false
+}
+
+/// 等待流式 delta 的合并缓冲真正 flush 落地。
+///
+/// 不能用固定 sleep 代替：ConversationStore 的 80ms flush 和测试自己的等待是两个
+/// 独立定时器，落地先后没有任何保证。真机满负载跑全量时调度会停顿到秒级，足以让
+/// 测试先醒来读到未 flush 的旧内容（实测正常余量只有约 84ms）。
+@MainActor
+func waitForPendingAssistantDeltaFlush(
+    in store: ConversationStore,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    for _ in 0..<500 {
+        if !store.hasPendingAssistantDeltasForTesting {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("流式 delta 合并缓冲未在 5s 内 flush", file: file, line: line)
 }
 
 @MainActor

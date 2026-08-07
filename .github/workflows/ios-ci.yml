@@ -36,6 +36,8 @@ on:
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
       - "scripts/check-app-store-metadata.sh"
+      - "scripts/ios_asc_cli.sh"
+      - "scripts/test-ios-asc-cli.sh"
       - "scripts/check-source-size.sh"
       - "scripts/check-mimi-protocol-contract.sh"
       - "docs/app-store/**"
@@ -50,6 +52,8 @@ on:
       - "scripts/ci-pr-scope.sh"
       - "docs/nightly-release.md"
       - "docs/local-testflight.md"
+      - "config/release/ios-asc-cli.env"
+      - "config/release/ios-testflight.local.env"
       - "README.md"
       - "README.zh-CN.md"
       - ".xcodebuildmcp/config.yaml"
@@ -77,7 +81,8 @@ concurrency:
 
 jobs:
   conversation-regressions:
-    # MimiRemote 的最低版本是 iOS 26；macos-26 runner 默认提供稳定版 Xcode 26 和 iOS 26 Simulator。
+    # 使用稳定版 Xcode 26 / iOS 26 Simulator 运行回归；工程仍以 iOS 18 为 deployment target，
+    # 因此编译阶段会检查所有 iOS 26+ API 是否具备有效 availability fallback。
     runs-on: macos-26
     timeout-minutes: 35
     steps:
@@ -99,6 +104,31 @@ jobs:
           go version
           xcodebuild -version
           xcrun simctl list devices available
+
+      - name: Verify iOS 18 deployment target
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target_name in \
+            MimiRemote \
+            MimiCarStatusWidgetExtension \
+            MimiRemoteTests \
+            MimiRemoteUITests
+          do
+            deployment_targets="$(
+              xcodebuild \
+                -project ios/MimiRemote/MimiRemote.xcodeproj \
+                -target "$target_name" \
+                -configuration Debug \
+                -showBuildSettings 2>/dev/null \
+                | awk '$1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" { print $3 }' \
+                | sort -u
+            )"
+            if [[ "$deployment_targets" != "18.0" ]]; then
+              echo "$target_name expected iOS deployment target 18.0, got: $deployment_targets" >&2
+              exit 1
+            fi
+          done
 
       - name: Resolve fixed CI simulator
         shell: bash
@@ -122,6 +152,9 @@ jobs:
 
       - name: Check App Store metadata
         run: bash ./scripts/check-app-store-metadata.sh
+
+      - name: Check pinned asc CLI integration
+        run: bash ./scripts/test-ios-asc-cli.sh
 
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
@@ -159,6 +192,8 @@ jobs:
       IOS_RELEASE_EXPECTED_XCODE_BUILD: 17F113
       IOS_RELEASE_EXPECTED_SDK_VERSION: "26.5"
       IOS_RELEASE_EXPECTED_SDK_BUILD: 23F81a
+      # 第一阶段只记录差异；Ruby 预检仍是实际构建号的唯一来源。
+      IOS_ASC_BUILD_NUMBER_MODE: shadow
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
     steps:
       - name: Checkout clean release source
@@ -230,6 +265,16 @@ jobs:
           [[ "$(xcodebuild -version)" == $'Xcode 26.6\nBuild version 17F113' ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == "26.5" ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-build-version)" == "23F81a" ]]
+
+      - name: Prepare pinned asc CLI shadow tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          asc_bin="$RUNNER_TEMP/mimi-release-tools/asc"
+          echo "ASC_CLI_BIN=$asc_bin" >> "$GITHUB_ENV"
+          if ! bash ./scripts/ios_asc_cli.sh install --destination "$asc_bin"; then
+            echo "::warning::固定版本 asc 安装或校验失败；本次发布保留 Ruby 预检并记录 shadow error。"
+          fi
 
       - name: Prepare App Store signing
         shell: bash

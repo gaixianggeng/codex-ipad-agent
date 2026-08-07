@@ -264,6 +264,16 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
         scheme: ThemeResolvedScheme,
         reduceTransparency: Bool
     ) -> Self {
+        // 浅色额度条和输入卡必须使用同一块不透明暖白，避免薄材质混入背景后偏成冷灰。
+        // 两者的主次改由阴影深度表达，而不是再增加一套近似的表面色。
+        if scheme == .light {
+            return Self(
+                materialStrength: .opaque,
+                surfaceTintOpacity: 1,
+                borderOpacity: reduceTransparency ? 0.08 : 0.05
+            )
+        }
+
         guard !reduceTransparency else {
             return Self(
                 materialStrength: .opaque,
@@ -272,19 +282,11 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
             )
         }
 
-        // 状态栏与输入卡使用同一层功能材质；展开时只增加模糊厚度保证长内容可读，
+        // 深色继续保留功能材质；展开时只增加模糊厚度保证长内容可读，
         // 不再靠阴影、彩色双描边或多层高光制造实体卡片感。
-        let surfaceTintOpacity: Double
-        switch scheme {
-        case .light:
-            surfaceTintOpacity = 0.58
-        case .dark:
-            surfaceTintOpacity = 0.46
-        }
-
         return Self(
             materialStrength: isExpanded ? .regular : .thin,
-            surfaceTintOpacity: surfaceTintOpacity,
+            surfaceTintOpacity: 0.46,
             borderOpacity: 0.58
         )
     }
@@ -346,7 +348,12 @@ struct ComposerStatusTray: View {
             traySurface(shape: shape, tokens: tokens, surfaceStyle: surfaceStyle)
         }
         .overlay {
-            shape.strokeBorder(tokens.border.opacity(surfaceStyle.borderOpacity), lineWidth: 0.75)
+            shape.strokeBorder(
+                tokens.resolvedScheme == .light
+                    ? Color.black.opacity(surfaceStyle.borderOpacity)
+                    : tokens.border.opacity(surfaceStyle.borderOpacity),
+                lineWidth: 0.75
+            )
         }
         .accessibilityElement(children: .contain)
     }
@@ -703,16 +710,28 @@ struct ComposerStatusTray: View {
     ) -> some View {
         switch surfaceStyle.materialStrength {
         case .opaque:
-            shape.fill(tokens.elevatedSurface)
+            if tokens.resolvedScheme == .light {
+                // 与侧栏、输入卡逐像素共享同一白色；额度条只保留很短的接触阴影，
+                // 让它贴近页面，同时与下方略微浮起的输入卡保持主次。
+                shape
+                    .fill(tokens.inputBackground)
+                    .shadow(
+                        color: Color.black.opacity(reduceTransparency ? 0.04 : 0.025),
+                        radius: 2,
+                        y: 1
+                    )
+            } else {
+                shape.fill(tokens.elevatedSurface)
+            }
         case .regular:
-            // 展开态内容更多，只增加材质模糊厚度；表面色和输入卡保持一致。
+            // 深色展开态内容更多，只增加材质模糊厚度。
             shape
                 .fill(.regularMaterial)
                 .overlay {
                     shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
                 }
         case .thin:
-            // 收起态和输入卡共用薄材质及同一表面色，不再额外抬高层级。
+            // 深色收起态维持薄材质，不再额外抬高层级。
             shape
                 .fill(.thinMaterial)
                 .overlay {

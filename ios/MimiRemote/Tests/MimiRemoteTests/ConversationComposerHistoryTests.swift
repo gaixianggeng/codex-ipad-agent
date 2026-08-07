@@ -1979,7 +1979,9 @@ extension ConversationDataFlowTests {
         )
 
         // A 的 80ms delta flush 在切换后完成，也只能回写捕获的 A scoped key。
-        try await Task.sleep(nanoseconds: 160_000_000)
+        // 必须让 mac-b 一直保持激活直到 flush 真正执行：若 flush 改回用 activeProfileID
+        // 重算缓存键，就会在 mac-b 命名空间里查不到 A 的 pending 而静默丢弃。
+        try await waitForPendingAssistantDeltaFlush(in: store)
         XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["B only"])
         XCTAssertNotEqual(store.messages(for: sessionID).first?.id, macAMessageID)
 
@@ -2017,7 +2019,7 @@ extension ConversationDataFlowTests {
     }
 
     func testSelectingLoadedSessionRetainsConversationCache() async {
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         let retainedLimit = ConversationStore.retainedSessionLimit
@@ -2477,7 +2479,7 @@ extension ConversationDataFlowTests {
         )
         XCTAssertEqual(store.messages(for: sessionID).first?.content, "A")
 
-        try await Task.sleep(nanoseconds: 160_000_000)
+        try await waitForPendingAssistantDeltaFlush(in: store)
 
         XCTAssertEqual(store.messages(for: sessionID).first?.content, "AB")
         XCTAssertEqual(store.messages(for: sessionID).first?.revision, 2)

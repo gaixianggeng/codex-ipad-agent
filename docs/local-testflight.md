@@ -33,6 +33,45 @@ MIM-78 引入 Widget Extension 后，Apple Developer 还必须先完成：
 
 配置未完成时，`git testflight-push --check` 会明确失败；不要用主 App profile 代替 Widget profile。
 
+### 固定版本 asc（MIM-92 第一阶段）
+
+仓库把 `asc` 固定为 `3.4.1`，版本、macOS arm64/amd64 SHA-256 与 Developer ID Team 都记录在 `config/release/ios-asc-cli.env`。不使用 `latest`，也不把二进制或凭据提交到仓库。
+
+本机安装和离线校验：
+
+```bash
+bash ./scripts/ios_asc_cli.sh install \
+  --destination "$HOME/.local/bin/asc"
+
+bash ./scripts/ios_asc_cli.sh check \
+  --binary "$HOME/.local/bin/asc"
+```
+
+安装命令从固定的 GitHub Release URL 下载，校验 SHA-256、`codesign --verify --strict`、Developer ID Team 和 `asc version` 后才写入目标路径；目标已存在但不匹配时会直接失败，不会静默覆盖。上游 3.4.1 的 Developer ID 签名有效，但未 notarize，因此这里不把会拒绝该产物的 `spctl` 作为通过条件。
+
+第一阶段提供三种构建号模式：
+
+- `off`：默认本地行为，不调用 asc。
+- `shadow`：查询 `asc builds next-build-number` 并记录与 Ruby 预检的差异；查询失败或不一致只告警，Ruby 结果仍唯一决定 Archive 和上传使用的 build number。
+- `enforce`：与 shadow 相同，但工具校验、查询或构建号不一致会阻止发布；完成真实影子验证前不启用。
+
+本地启用 shadow 时，只在仓库外的 `~/.config/ios-testflight/mimi/secrets.env` 增加：
+
+```bash
+IOS_ASC_BUILD_NUMBER_MODE=shadow
+ASC_CLI_BIN="$HOME/.local/bin/asc"
+```
+
+调用 asc 时脚本会把现有 `APP_STORE_CONNECT_API_KEY_*` 映射为 asc 的环境变量，并在单次进程内强制设置：
+
+```bash
+ASC_TELEMETRY_DISABLED=1
+ASC_BYPASS_KEYCHAIN=1
+ASC_STRICT_AUTH=1
+```
+
+不要执行 `asc install-skills`，也不要创建仓库内 `.asc/config.json`。GitHub TestFlight job 会把固定二进制安装到 `RUNNER_TEMP` 并启用 `shadow`；现阶段不会用 asc 上传、分发、提交审核或替代 `altool --validate-app`。
+
 ## 使用
 
 先做无副作用预检：
@@ -69,4 +108,5 @@ git testflight-push \
 - 同一 commit 成功状态保存在 `~/Library/Application Support/ios-testflight-local/mimi/`，默认防止重复上传。
 - 主工作区的未提交内容不会进入构建；发布来源始终是明确 commit。
 - 本机必须在线、解锁，并安装配置指定的 Xcode 与有效签名材料。
+- asc shadow 的 `error` 或 `mismatch` 不是验证通过；先从发布日志中的 `ASC_CLI_SHADOW_STATUS` 核对差异，再决定是否升级为 `enforce`。
 - `agentd` 重启会丢失内存中的任务展示状态；发布是否已经结束应从 `~/Library/Logs/ios-testflight-local/<project-id>/` 和 last-run 状态文件恢复核对，确认后再决定是否重试。

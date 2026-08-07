@@ -428,42 +428,50 @@ extension CodexAppServerSessionRuntime {
         _ = await refreshRateLimitIfAvailable()
     }
 
-    func refreshAccountTokenUsage() async -> AccountTokenUsageSnapshot? {
+    func refreshAccountTokenUsage(forceRefresh: Bool = false) async -> AccountTokenUsageFetch {
         if let accountTokenUsageRefreshTask {
             return await accountTokenUsageRefreshTask.value
         }
 
-        let task = Task { [self] in
-            await performAccountTokenUsageRefresh()
-        }
+        let task = Task { [self] in await performAccountTokenUsageRefresh(forceRefresh: forceRefresh) }
         accountTokenUsageRefreshTask = task
-        let snapshot = await task.value
+        let fetch = await task.value
         accountTokenUsageRefreshTask = nil
-        return snapshot
+        return fetch
     }
 
-    func performAccountTokenUsageRefresh() async -> AccountTokenUsageSnapshot? {
+    func performAccountTokenUsageRefresh(forceRefresh: Bool = false) async -> AccountTokenUsageFetch {
         // 账号活动是 Codex/ChatGPT 专属能力；Claude bridge 没有同构数据，必须 fail closed。
-        guard runtimeProvider == "codex",
-              let config = try? await ensureConfig(),
-              config.policy.allowedMethods.contains("account/usage/read")
-        else {
-            return accountTokenUsage
+        guard runtimeProvider == "codex" else {
+            return .unsupported
+        }
+
+        let config: CodexAppServerConfigResponse
+        do {
+            config = try await ensureConfig()
+        } catch {
+            // 配置读取失败代表本次请求状态未知，不能与服务端明确不支持该方法混为一谈。
+            return .failed
+        }
+        guard config.policy.allowedMethods.contains("account/usage/read") else {
+            return .unsupported
         }
 
         do {
             let result = try await sendRecoveringFromStaleInitialization(
-                CodexAppServerRequestBuilder(allowlistedProjects: config.projects).accountUsageRead(),
+                CodexAppServerRequestBuilder(allowlistedProjects: config.projects)
+                    .accountUsageRead(forceRefresh: forceRefresh),
                 timeout: min(requestTimeout, 10)
             )
             guard let snapshot = accountTokenUsageSnapshot(fromPayload: result) else {
-                return accountTokenUsage
+                return .failed
             }
             accountTokenUsage = snapshot
-            return snapshot
+            return .snapshot(snapshot)
         } catch {
-            // “我的”页的统计是展示增强，失败时保留最近一次内存快照，不影响会话链路。
-            return accountTokenUsage
+            // “我的”页的统计是展示增强，失败不影响会话链路。但失败必须如实上报：
+            // 要不要退回上一次的快照是展示层的决定，在这里兜底会把错误洗成成功。
+            return .failed
         }
     }
 

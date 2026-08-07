@@ -29,7 +29,7 @@ extension ConversationDataFlowTests {
     }
 
     func testWorkspaceCatalogRefreshScopeTracksCredentialSuspensionWithoutChangingHost() {
-        let hostScope = AppStore().activeHostScope
+        let hostScope = makeIsolatedAppStore().activeHostScope
 
         XCTAssertNotEqual(
             WorkspaceCatalogRefreshScope(hostScope: hostScope, credentialsSuspended: false),
@@ -37,7 +37,7 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testWorkspaceSessionRefreshScopeTracksHostGenerationWithSameWorkspaceSelection() {
+    func testWorkspaceSessionRefreshScopeTracksHostGenerationAndRuntimeSelection() {
         let firstHostScope = HostScope(
             profileID: "profile-a",
             installationID: "installation-a",
@@ -49,32 +49,173 @@ extension ConversationDataFlowTests {
             generation: 2
         )
 
+        let codexKey = WorkspaceSessionPresentationKey(
+            hostScope: firstHostScope,
+            workspaceID: "workspace-a",
+            workspacePath: "/tmp/workspace-a",
+            runtimeProvider: "codex"
+        )
+        let reconnectedCodexKey = WorkspaceSessionPresentationKey(
+            hostScope: reconnectedHostScope,
+            workspaceID: "workspace-a",
+            workspacePath: "/tmp/workspace-a",
+            runtimeProvider: "codex"
+        )
+        let claudeKey = WorkspaceSessionPresentationKey(
+            hostScope: firstHostScope,
+            workspaceID: "workspace-a",
+            workspacePath: "/tmp/workspace-a",
+            runtimeProvider: "claude"
+        )
+
         XCTAssertNotEqual(
-            WorkspaceSessionRefreshScope(
-                hostScope: firstHostScope,
-                workspaceID: "workspace-a",
-                needsAuthoritativeFirstPage: true
-            ),
-            WorkspaceSessionRefreshScope(
-                hostScope: reconnectedHostScope,
-                workspaceID: "workspace-a",
-                needsAuthoritativeFirstPage: true
-            ),
+            WorkspaceSessionRefreshScope(presentationKey: codexKey, needsInitialLoad: true),
+            WorkspaceSessionRefreshScope(presentationKey: reconnectedCodexKey, needsInitialLoad: true),
             "同一 workspace 在连接代次变化后必须重新触发精确首屏"
         )
         XCTAssertNotEqual(
-            WorkspaceSessionRefreshScope(
-                hostScope: firstHostScope,
-                workspaceID: "workspace-a",
-                needsAuthoritativeFirstPage: false
-            ),
-            WorkspaceSessionRefreshScope(
-                hostScope: firstHostScope,
-                workspaceID: "workspace-a",
-                needsAuthoritativeFirstPage: true
-            ),
-            "late-child 使完成态失效后必须重新触发精确首屏"
+            WorkspaceSessionRefreshScope(presentationKey: codexKey, needsInitialLoad: true),
+            WorkspaceSessionRefreshScope(presentationKey: claudeKey, needsInitialLoad: true),
+            "切换 Runtime 必须读取自己的首屏缓存"
         )
+    }
+
+    func testWorkspaceRuntimeSessionPageStateKeepsCursorAndRowsInsideOneRuntimeCache() {
+        let projectID = "workspace-runtime-cache"
+        let first = makeSession(
+            id: "codex-first",
+            projectID: projectID,
+            title: "第一页",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let older = makeSession(
+            id: "codex-older",
+            projectID: projectID,
+            title: "第二页",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        var state = WorkspaceRuntimeSessionPageState()
+
+        state.replace(
+            with: SessionsPage(sessions: [first], nextCursor: "codex-next", hasMore: true),
+            canonicalSessionIDsBeforeLoad: [first.id]
+        )
+        state.append(SessionsPage(sessions: [older, first], nextCursor: nil, hasMore: false))
+
+        XCTAssertEqual(state.sessions.map(\.id), ["codex-first", "codex-older"])
+        XCTAssertNil(state.nextCursor)
+        XCTAssertFalse(state.hasMore)
+        XCTAssertTrue(state.hasLoadedFirstPage)
+    }
+
+    func testWorkspaceRuntimeSessionPageReconcilesCanonicalUpdatesAndNewSessions() {
+        let projectID = "workspace-runtime-live-updates"
+        let cached = makeSession(
+            id: "cached-session",
+            projectID: projectID,
+            title: "旧标题",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let preexistingOutsidePage = makeSession(
+            id: "older-session",
+            projectID: projectID,
+            title: "已有旧会话",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        var state = WorkspaceRuntimeSessionPageState()
+        state.replace(
+            with: SessionsPage(sessions: [cached], nextCursor: "older", hasMore: true),
+            canonicalSessionIDsBeforeLoad: [cached.id, preexistingOutsidePage.id]
+        )
+
+        let refreshedCached = makeSession(
+            id: cached.id,
+            projectID: projectID,
+            title: "WebSocket 新标题",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 30)
+        )
+        let newlyObserved = makeSession(
+            id: "new-session",
+            projectID: projectID,
+            title: "刚创建的会话",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            updatedAt: Date(timeIntervalSince1970: 40)
+        )
+
+        let presented = state.reconciledSessions(
+            with: [preexistingOutsidePage, refreshedCached, newlyObserved]
+        )
+
+        XCTAssertEqual(presented.map(\.id), [newlyObserved.id, cached.id])
+        XCTAssertEqual(presented.last?.title, "WebSocket 新标题")
+        XCTAssertEqual(presented.last?.status, "history")
+        XCTAssertEqual(state.nextCursor, "older", "canonical 对账不能破坏 Runtime 独立 cursor")
+        XCTAssertTrue(state.hasMore)
+    }
+
+    func testWorkspaceRuntimePageReturnsOnlyTheSelectedRuntime() async throws {
+        let project = makeProject(id: "workspace-runtime-filter")
+        let codexSession = makeSession(
+            id: "workspace-codex",
+            projectID: project.id,
+            title: "Codex 会话",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex"
+        )
+        let claudeSession = makeSession(
+            id: "workspace-claude",
+            projectID: project.id,
+            title: "Claude 会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [codexSession, claudeSession],
+            workspaceSessions: [project.id: [codexSession, claudeSession]]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        let codexPage = try await store.workspaceRuntimeSessionsPage(
+            projectID: project.id,
+            runtimeProvider: "codex",
+            cursor: nil,
+            limit: 20
+        )
+        let claudePage = try await store.workspaceRuntimeSessionsPage(
+            projectID: project.id,
+            runtimeProvider: "claude",
+            cursor: nil,
+            limit: 20
+        )
+
+        XCTAssertEqual(codexPage.sessions.map(\.id), [codexSession.id])
+        XCTAssertEqual(claudePage.sessions.map(\.id), [claudeSession.id])
     }
 
     func testSparseWorkspaceCacheStillLoadsOneAuthoritativeFirstPage() async throws {
@@ -95,7 +236,7 @@ extension ConversationDataFlowTests {
                 page: SessionsPage(sessions: completePage, nextCursor: "older", hasMore: true)
             )
             let store = SessionStore(
-                appStore: AppStore(),
+                appStore: makeIsolatedAppStore(),
                 conversationStore: ConversationStore(),
                 logStore: LogStore(),
                 clientFactory: { client }
@@ -157,7 +298,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -211,7 +352,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["after-sparse-children": SessionsPage(sessions: roots)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -262,7 +403,7 @@ extension ConversationDataFlowTests {
             cursorPages: cursorPages
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -382,7 +523,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -411,7 +552,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [cachedRoot], nextCursor: nil, hasMore: true)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -464,7 +605,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["external-next": SessionsPage(sessions: olderRoots)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -499,7 +640,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -573,7 +714,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -639,7 +780,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -693,7 +834,7 @@ extension ConversationDataFlowTests {
             cursorPages: cursorPages
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -787,7 +928,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -836,7 +977,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -872,7 +1013,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: completePage, nextCursor: "authoritative-older", hasMore: true)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -947,7 +1088,7 @@ extension ConversationDataFlowTests {
         var now = Date(timeIntervalSince1970: 1_780_000_000)
         var requestedSleeps: [UInt64] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -994,7 +1135,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1051,7 +1192,7 @@ extension ConversationDataFlowTests {
             )
         }
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1115,7 +1256,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1185,7 +1326,7 @@ extension ConversationDataFlowTests {
             )
         }
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1264,7 +1405,7 @@ extension ConversationDataFlowTests {
                 hasMore: true
             )
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1325,7 +1466,7 @@ extension ConversationDataFlowTests {
                 hasMore: true
             )
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1395,7 +1536,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1,
             blockedError: CancellationError()
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1437,7 +1578,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1487,7 +1628,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1537,7 +1678,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1624,7 +1765,7 @@ extension ConversationDataFlowTests {
             authoritativePage: authoritativePage
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1684,7 +1825,7 @@ extension ConversationDataFlowTests {
             authoritativePage: SessionsPage(sessions: [authoritativeSession])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1743,7 +1884,7 @@ extension ConversationDataFlowTests {
             authoritativePage: SessionsPage(sessions: [authoritativeSession])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1799,7 +1940,7 @@ extension ConversationDataFlowTests {
             authoritativePage: SessionsPage(sessions: [])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1846,7 +1987,7 @@ extension ConversationDataFlowTests {
             projectsHandler: { await gate.projects() }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1900,7 +2041,7 @@ extension ConversationDataFlowTests {
                 resolveResults: [path: .failure(error)]
             )
             let store = SessionStore(
-                appStore: AppStore(),
+                appStore: makeIsolatedAppStore(),
                 conversationStore: ConversationStore(),
                 logStore: LogStore(),
                 clientFactory: { client }
@@ -1921,7 +2062,7 @@ extension ConversationDataFlowTests {
             resolveResults: [path: .failure(AgentAPIError.server(status: 403, message: "forbidden"))]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1942,7 +2083,7 @@ extension ConversationDataFlowTests {
             resolveResults: [workspace.path: .success(workspace)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1964,7 +2105,7 @@ extension ConversationDataFlowTests {
             resolveWorkspaceHandler: { _ in try await gate.resolve() }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1985,20 +2126,33 @@ extension ConversationDataFlowTests {
 
     func testWorkspaceSessionLoadInvocationTokensKeepOnlyLatestABAReturnEligible() {
         var tokens = WorkspaceSessionLoadInvocationTokens()
-        let firstA = tokens.begin(for: "workspace-a")
-        let firstB = tokens.begin(for: "workspace-b")
-        let latestA = tokens.begin(for: "workspace-a")
+        let hostScope = makeIsolatedAppStore().activeHostScope
+        let keyA = WorkspaceSessionPresentationKey(
+            hostScope: hostScope,
+            workspaceID: "workspace-a",
+            workspacePath: "/tmp/workspace-a",
+            runtimeProvider: "codex"
+        )
+        let keyB = WorkspaceSessionPresentationKey(
+            hostScope: hostScope,
+            workspaceID: "workspace-b",
+            workspacePath: "/tmp/workspace-b",
+            runtimeProvider: "claude"
+        )
+        let firstA = tokens.begin(for: keyA)
+        let firstB = tokens.begin(for: keyB)
+        let latestA = tokens.begin(for: keyA)
 
         XCTAssertFalse(
-            tokens.isCurrent(firstA, for: "workspace-a"),
+            tokens.isCurrent(firstA, for: keyA),
             "A → B → A 后，旧 A waiter 的取消或失败不能再回写"
         )
-        XCTAssertTrue(tokens.isCurrent(firstB, for: "workspace-b"), "其他工作区的 invocation 必须彼此隔离")
-        XCTAssertTrue(tokens.isCurrent(latestA, for: "workspace-a"))
+        XCTAssertTrue(tokens.isCurrent(firstB, for: keyB), "其他工作区和 Runtime 的 invocation 必须彼此隔离")
+        XCTAssertTrue(tokens.isCurrent(latestA, for: keyA))
 
-        tokens.remove(for: "workspace-a")
-        XCTAssertFalse(tokens.isCurrent(latestA, for: "workspace-a"))
-        XCTAssertTrue(tokens.isCurrent(firstB, for: "workspace-b"))
+        tokens.remove { $0.workspaceID == "workspace-a" }
+        XCTAssertFalse(tokens.isCurrent(latestA, for: keyA))
+        XCTAssertTrue(tokens.isCurrent(firstB, for: keyB))
     }
 
     func testCancelledWorkspaceSessionWaiterRejoinsSingleFlightAndAppliesResult() async throws {
@@ -2016,7 +2170,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2047,70 +2201,6 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [session.id])
     }
 
-    func testMultiRuntimeWorkspaceSessionListPropagatesClaudeFailureAfterCodexSuccess() async throws {
-        let project = AgentProject(id: "proj_multi_list_failure", name: "Multi List", path: "/tmp/multi-list")
-        let workspace = AgentWorkspace(project: project)
-        let config = makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()])
-        let codexTransport = FakeCodexAppServerTransport()
-        let claudeTransport = FakeCodexAppServerTransport()
-        let client = MultiRuntimeSessionAPIClient(
-            codexRuntime: CodexAppServerSessionRuntime(
-                endpoint: "http://127.0.0.1:8787",
-                token: "outer-token",
-                runtimeProvider: "codex",
-                transportFactory: { codexTransport },
-                configProvider: { config }
-            ),
-            claudeRuntime: CodexAppServerSessionRuntime(
-                endpoint: "http://127.0.0.1:8787",
-                token: "outer-token",
-                runtimeProvider: "claude",
-                transportFactory: { claudeTransport },
-                configProvider: { config }
-            )
-        )
-
-        let listTask = Task {
-            try await client.sessionsPage(
-                workspace: workspace,
-                cursor: nil,
-                limit: 20,
-                consistency: .authoritative
-            )
-        }
-        let codexInitialize = try await waitForFakeAppServerRequest(codexTransport, method: "initialize")
-        transportResponse(codexTransport, id: codexInitialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
-        let codexList = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: 1)
-        transportResponse(
-            codexTransport,
-            id: codexList.id,
-            result: appServerThreadListResult([
-                appServerThreadJSON(
-                    id: "codex-visible-before-claude-failure",
-                    cwd: project.path,
-                    source: "appServer",
-                    updatedAt: 1_780_493_000
-                )
-            ], nextCursor: nil)
-        )
-
-        let claudeInitialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
-        transportResponse(claudeTransport, id: claudeInitialize.id, result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#)
-        let claudeList = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: 1)
-        transportErrorResponse(
-            claudeTransport,
-            id: claudeList.id,
-            code: -32000,
-            message: "Claude workspace list failed"
-        )
-
-        do {
-            _ = try await listTask.value
-            XCTFail("Claude 列表失败必须向 WorkspaceRootView 抛出，才能显示 failed 状态和重试入口")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("Claude workspace list failed"))
-        }
-    }
 }
 
 private enum FastThenAuthoritativeTestError: Error {

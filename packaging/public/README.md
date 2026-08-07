@@ -122,7 +122,7 @@ macOS 上的 `agentd restart` 使用 launchd 单次原子重启，可以从当�
 
 ### Claude Code 可选通道
 
-Claude 通道默认关闭，需要 `alleycat-claude-bridge >= 0.2.1`。Mimi Remote Mac 已内置经过签名的兼容 bridge，不要为 DMG 安装重复执行 `cargo install`；只需在私有备份后显式设置 `claude.enabled=true`，保留或清空 `bridge_bin` 以使用随包 sibling。
+Claude 通道需要 `alleycat-claude-bridge >= 0.2.1`。Mimi Remote Mac 已内置经过签名的兼容 bridge，不要为 DMG 安装重复执行 `cargo install`。App 启动时会检测随包 bridge、Claude CLI 和登录态；全部通过且用户没有明确关闭时自动启用，否则保持关闭。设置页可明确开启或关闭，明确关闭会在后续启动中保留。
 
 Homebrew、Linux 或独立开发环境才需要从完整源码仓库安装外置 bridge：
 
@@ -133,7 +133,7 @@ cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
 command -v alleycat-claude-bridge
 ```
 
-把最后一条命令返回的绝对路径写入配置的 `claude.bridge_bin`，设置 `claude.enabled=true`，然后执行：
+Homebrew / Linux 用户把最后一条命令返回的绝对路径写入配置的 `claude.bridge_bin`，设置 `claude.enabled=true`，然后执行：
 
 ```bash
 agentd restart

@@ -9,6 +9,7 @@ IOS_WIDGET_BUNDLE_ID="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswid
 IOS_TESTFLIGHT_UPLOAD="${IOS_TESTFLIGHT_UPLOAD:-1}"
 IOS_TESTFLIGHT_VALIDATE="${IOS_TESTFLIGHT_VALIDATE:-0}"
 TESTFLIGHT_WHATS_NEW="${TESTFLIGHT_WHATS_NEW:-}"
+IOS_ASC_BUILD_NUMBER_MODE="${IOS_ASC_BUILD_NUMBER_MODE:-off}"
 
 fail() {
   echo "ios-testflight-ci: $1" >&2
@@ -17,6 +18,68 @@ fail() {
 
 require_env() {
   [[ -n "${!1:-}" ]] || fail "$1 is required"
+}
+
+case "$IOS_ASC_BUILD_NUMBER_MODE" in
+  off|shadow|enforce) ;;
+  *) fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce" ;;
+esac
+
+run_asc_build_number_shadow() {
+  local phase="$1"
+  local local_build="$2"
+  local expected_build="$3"
+  local shadow_output
+  local shadow_suggested
+
+  [[ "$IOS_ASC_BUILD_NUMBER_MODE" != "off" ]] || return 0
+
+  # 第一阶段只做影子核对：Ruby 仍是实际构建号的唯一来源。shadow 模式下
+  # asc 不可用、查询失败或结果不一致都会写日志但不改变 Archive/上传行为；
+  # 稳定后可切 enforce，把同一检查升级为发布门禁。
+  if shadow_output="$(
+    bash "$ROOT_DIR/scripts/ios_asc_cli.sh" next-build-number \
+      --bundle-id "$IOS_BUNDLE_ID" \
+      --version "$marketing_version" \
+      --build "$local_build"
+  )"; then
+    printf '%s\n' "$shadow_output"
+  else
+    printf 'ASC_CLI_SHADOW_PHASE=%s\n' "$phase"
+    printf 'ASC_CLI_SHADOW_STATUS=error\n'
+    if [[ "$IOS_ASC_BUILD_NUMBER_MODE" == "enforce" ]]; then
+      fail "asc shadow query failed during $phase"
+    fi
+    echo "ios-testflight-ci: warning: asc shadow query failed during $phase; keep Ruby preflight result" >&2
+    return 0
+  fi
+
+  shadow_suggested="$(
+    printf '%s\n' "$shadow_output" \
+      | awk -F= '/^ASC_CLI_SUGGESTED_BUILD_NUMBER=/{print $2; exit}'
+  )"
+  if [[ ! "$shadow_suggested" =~ ^[0-9]+$ ]]; then
+    printf 'ASC_CLI_SHADOW_PHASE=%s\n' "$phase"
+    printf 'ASC_CLI_SHADOW_STATUS=invalid-output\n'
+    if [[ "$IOS_ASC_BUILD_NUMBER_MODE" == "enforce" ]]; then
+      fail "asc shadow output is invalid during $phase"
+    fi
+    echo "ios-testflight-ci: warning: asc shadow output is invalid during $phase; keep Ruby preflight result" >&2
+    return 0
+  fi
+
+  printf 'ASC_CLI_SHADOW_PHASE=%s\n' "$phase"
+  printf 'ASC_CLI_SHADOW_EXPECTED_BUILD_NUMBER=%s\n' "$expected_build"
+  if [[ "$shadow_suggested" == "$expected_build" ]]; then
+    printf 'ASC_CLI_SHADOW_STATUS=match\n'
+    return 0
+  fi
+
+  printf 'ASC_CLI_SHADOW_STATUS=mismatch\n'
+  if [[ "$IOS_ASC_BUILD_NUMBER_MODE" == "enforce" ]]; then
+    fail "asc shadow mismatch during $phase: ruby=$expected_build asc=$shadow_suggested"
+  fi
+  echo "ios-testflight-ci: warning: asc shadow mismatch during $phase: ruby=$expected_build asc=$shadow_suggested; keep Ruby preflight result" >&2
 }
 
 for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
@@ -95,6 +158,7 @@ preflight="$(
 printf '%s\n' "$preflight"
 build_number="$(printf '%s\n' "$preflight" | awk -F= '/^ASC_SUGGESTED_BUILD_NUMBER=/{print $2; exit}')"
 [[ "$build_number" =~ ^[0-9]+$ ]] || fail "suggested build number must be an integer"
+run_asc_build_number_shadow "before-archive" "$current_build" "$build_number"
 
 output="$RUNNER_TEMP/mimi-testflight/$marketing_version-$build_number"
 archive="$output/MimiRemote.xcarchive"
@@ -231,6 +295,7 @@ final_preflight="$(
 )"
 final_suggested="$(printf '%s\n' "$final_preflight" | awk -F= '/^ASC_SUGGESTED_BUILD_NUMBER=/{print $2; exit}')"
 [[ "$final_suggested" == "$build_number" ]] || fail "remote build number changed during archive; rebuild with $final_suggested"
+run_asc_build_number_shadow "before-upload" "$build_number" "$final_suggested"
 
 if [[ "$IOS_TESTFLIGHT_VALIDATE" == "1" ]]; then
   echo "ios-testflight-ci: validate $IOS_BUNDLE_ID $marketing_version ($build_number)"

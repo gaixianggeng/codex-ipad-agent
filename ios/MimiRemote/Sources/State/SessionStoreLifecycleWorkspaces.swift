@@ -146,7 +146,7 @@ extension SessionStore {
             summary: AccountTokenUsageSummary(lifetimeTokens: 50_160_000_000),
             dailyUsageBuckets: debugDailyUsage
         )
-        isAccountTokenUsageUnavailable = false
+        accountTokenActivity = .resolved(buckets: debugDailyUsage, asOf: now)
         let mimiDemo = AgentWorkspace(
             id: "debug-mimi-demo",
             name: "mimi-remote",

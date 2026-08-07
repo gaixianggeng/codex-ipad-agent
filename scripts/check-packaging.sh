@@ -160,10 +160,24 @@ grep -Fq 'scripts/build-macos-installer.sh' .github/workflows/release.yml \
   || fail "Release workflow 没有构建 Mac DMG。"
 grep -Fq 'scripts/check-macos-installer.sh --require-notarization' .github/workflows/release.yml \
   || fail "Release workflow 没有校验 Developer ID 与 notarization。"
+grep -Fq -- '--development-signing' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有提供同团队签名的本地初始化验收模式。"
+grep -Fq -- '--require-team-signing' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有提供 App/agentd/bridge Team ID 一致性校验。"
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
+grep -Fq 'internal/claudebridge/version.go' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有读取 agentd 的 Claude bridge 最低版本。"
+grep -Fq 'version_at_least "$bridge_version" "$minimum_bridge_version"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Claude bridge 与 agentd 的版本兼容性。"
+grep -Fq '/usr/bin/arch -arm64' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有在 Apple silicon 上固定使用 arm64 执行版本探针。"
+grep -Fq 'find "$APP_PATH" -type f -print0' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有枚举 App 内全部 Mach-O。"
+grep -Fq 'xcrun vtool -arch' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有逐架构检查 macOS 构建元数据。"
 grep -Fq 'gh release upload "$GITHUB_REF_NAME"' .github/workflows/release.yml \
   || fail "Release workflow 没有上传 Mac DMG 到 GitHub Release。"
 grep -Fq 'scripts/package-skill.sh' .github/workflows/release.yml \

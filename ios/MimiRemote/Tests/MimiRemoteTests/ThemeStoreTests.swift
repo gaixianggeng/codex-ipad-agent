@@ -272,7 +272,7 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(darkSurface, red: 31, green: 29, blue: 30)
         assertRGB(darkElevatedSurface, red: 42, green: 39, blue: 41)
         assertRGB(darkSidebarBackground, red: 23, green: 21, blue: 22)
-        assertRGB(darkSidebarSurfaceBackground, red: 42, green: 39, blue: 41)
+        assertRGB(darkSidebarSurfaceBackground, red: 25, green: 23, blue: 25)
         assertRGB(darkSidebarHoverFill, red: 42, green: 39, blue: 41)
         assertRGB(darkInputBackground, red: 35, green: 33, blue: 36)
         assertRGB(darkPlanCardBackground, red: 35, green: 33, blue: 36)
@@ -299,13 +299,18 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(darkUserBubble.blue, darkElevatedSurface.blue, accuracy: 0.001)
         XCTAssertGreaterThan(darkUserBubble.alpha, 0.99)
 
-        // 浮动侧栏与普通工作区卡必须共用同一内容表面，避免出现第三种灰白/暖黑。
+        // 浅色下侧栏仍与普通工作区卡共用同一内容表面，避免出现第三种灰白。
         XCTAssertEqual(lightSidebarSurfaceBackground.red, lightSurface.red, accuracy: 0.001)
         XCTAssertEqual(lightSidebarSurfaceBackground.green, lightSurface.green, accuracy: 0.001)
         XCTAssertEqual(lightSidebarSurfaceBackground.blue, lightSurface.blue, accuracy: 0.001)
-        XCTAssertEqual(darkSidebarSurfaceBackground.red, darkContentPanelBackground.red, accuracy: 0.001)
-        XCTAssertEqual(darkSidebarSurfaceBackground.green, darkContentPanelBackground.green, accuracy: 0.001)
-        XCTAssertEqual(darkSidebarSurfaceBackground.blue, darkContentPanelBackground.blue, accuracy: 0.001)
+
+        // 深色下侧栏刻意脱离内容表面：它是结构分区而不是内容卡片，
+        // 跟内容区差一整级亮度会让整屏出现两块明显不同的深色。
+        // 这里只比背景高一点点，层级交给留白和字重表达，因此断言的是
+        // “贴近背景、明显低于内容表面”，而不是与内容表面相等。
+        XCTAssertLessThan(darkSidebarSurfaceBackground.red, darkContentPanelBackground.red - 0.03)
+        XCTAssertGreaterThan(darkSidebarSurfaceBackground.red, darkBackground.red)
+        XCTAssertLessThan(darkSidebarSurfaceBackground.red - darkBackground.red, 0.05)
     }
 
     func testXcodePresetKeepsEditorInspiredContrastAndAccents() {
@@ -500,6 +505,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+        XCTAssertFalse(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
@@ -519,6 +525,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
     }
 
     func testWorkbenchLayoutUsesSheetNavigationOnMediumIPadWidth() {
@@ -533,6 +540,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertTrue(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
     }
 
     func testWorkbenchLayoutKeepsSplitNavigationOnWidePadWidth() {
@@ -550,6 +558,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertTrue(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
         XCTAssertEqual(layout.projectColumn.ideal, 330)
         XCTAssertEqual(layout.titleMaxWidth, 340)
     }
@@ -574,6 +583,25 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(narrowPad.usesFloatingSidebarSurface)
         XCTAssertTrue(widePad.usesFloatingSidebarSurface)
         XCTAssertFalse(widePhone.usesFloatingSidebarSurface)
+        XCTAssertTrue(narrowPad.prefersSessionTableDensity)
+        XCTAssertTrue(widePad.prefersSessionTableDensity)
+        XCTAssertFalse(widePhone.prefersSessionTableDensity)
+    }
+
+    func testSessionTableDensityUsesCompactFallbackOnlyForNarrowIPadWindows() {
+        let narrowPad = WorkbenchLayout(
+            containerWidth: 699,
+            horizontalSizeClass: .compact,
+            isPad: true
+        )
+        let portraitPad = WorkbenchLayout(
+            containerWidth: 744,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
+
+        XCTAssertFalse(narrowPad.prefersSessionTableDensity)
+        XCTAssertTrue(portraitPad.prefersSessionTableDensity)
     }
 
     func testConversationLayoutFitsPhonePortraitWidth() {

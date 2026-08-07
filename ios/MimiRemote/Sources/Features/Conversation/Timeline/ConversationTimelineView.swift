@@ -1029,37 +1029,59 @@ private struct ConversationReturnToTailButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "arrow.down")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-                .frame(width: 44, height: 44)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(tokens.elevatedSurface)
-                    }
-                }
-                // 回到最新是漂浮在内容之上的瞬时控件，使用更通透的原生 Liquid Glass；
-                // 开启“降低透明度”时关闭玻璃并保留上面的实色主题表面。
-                .glassEffect(
-                    reduceTransparency ? .identity : .clear.interactive(),
-                    in: .circle
-                )
-                .overlay {
-                    Circle()
-                        .stroke(
-                            tokens.border.opacity(reduceTransparency ? 0.72 : 0.42),
-                            lineWidth: 0.75
-                        )
-                }
-                .shadow(
-                    color: Color.black.opacity(reduceTransparency ? 0.14 : 0.10),
-                    radius: 7,
-                    y: 3
-                )
+            buttonLabel
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    @ViewBuilder
+    private var buttonLabel: some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                baseLabel
+                    .background {
+                        if reduceTransparency {
+                            Circle().fill(tokens.elevatedSurface)
+                        }
+                    }
+                    // iOS 26+ 保留原生交互玻璃；Reduce Transparency 关闭玻璃动画与透明度。
+                    .glassEffect(
+                        reduceTransparency ? .identity : .clear.interactive(),
+                        in: .circle
+                    )
+            } else {
+                baseLabel
+                    .background {
+                        if reduceTransparency {
+                            Circle().fill(tokens.elevatedSurface)
+                        } else {
+                            // iOS 18–25 使用普通系统材质，只保留浮层层级和 44pt 命中区域。
+                            Circle().fill(.regularMaterial)
+                        }
+                    }
+            }
+        }
+        .overlay {
+            Circle()
+                .stroke(
+                    tokens.border.opacity(reduceTransparency ? 0.72 : 0.42),
+                    lineWidth: 0.75
+                )
+        }
+        .shadow(
+            color: Color.black.opacity(reduceTransparency ? 0.14 : 0.10),
+            radius: 7,
+            y: 3
+        )
+    }
+
+    private var baseLabel: some View {
+        Image(systemName: "arrow.down")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(tokens.primaryText)
+            .frame(width: 44, height: 44)
     }
 }
 

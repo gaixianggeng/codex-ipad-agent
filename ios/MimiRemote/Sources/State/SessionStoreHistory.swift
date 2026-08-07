@@ -348,7 +348,9 @@ extension SessionStore {
         reason: HistoryLoadReason = .automatic,
         successStatusMessage: String? = nil,
         allowPolicyRetry: Bool = true,
-        recoveryGeneration: UInt64? = nil
+        recoveryGeneration: UInt64? = nil,
+        fullTurnPageLimit: Int? = nil,
+        noticeMessageOverride: String? = nil
     ) async -> Bool {
         if session.isLocalDraft {
             return true
@@ -418,7 +420,13 @@ extension SessionStore {
 
         let signature = HistoryLoadSignature(session: session)
         let jobToken = beginHistoryLoadJob(sessionID: session.id)
-        let limit = loadMode == .full ? fullHistoryPageLimit : economyHistoryPageLimit
+        // 自适应缩页时 full 直接按目标 turn 数请求（runtime 对 ≤ ladder 顶端的 limit 视为精确 turn 数）。
+        let limit: Int
+        if loadMode == .full, let fullTurnPageLimit {
+            limit = fullTurnPageLimit
+        } else {
+            limit = loadMode == .full ? fullHistoryPageLimit : economyHistoryPageLimit
+        }
         let hasNewerSessionSnapshot = historyLoadedSignatureBySessionID[session.id].map { $0 != signature } == true
         let cachePolicy: HistoryFirstPageCachePolicy = force || hasNewerSessionSnapshot ? .bypass : .reuseRecent
         let task = Task { [self] in
@@ -436,6 +444,7 @@ extension SessionStore {
             cachePolicy: cachePolicy,
             recoveryGeneration: recoveryGeneration,
             allowPolicyRetry: allowPolicyRetry,
+            fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
             task: task,
             requiresForegroundReporting: !quiet,
             foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage,
@@ -446,7 +455,9 @@ extension SessionStore {
             setHistoryLoadNotice(
                 sessionID: session.id,
                 kind: loadMode == .full ? .loadingFull : .loadingSummary,
-                message: loadMode == .economy ? deferredFullHistoryNotice(sessionID: session.id) : nil
+                // 自适应缩页/降级重试会先给出带量级的提示；没有 override 时保持既有默认文案，
+                // 避免这里的重设把 failHistoryLoadJob 刚写入的结构化原因覆盖成泛化文案。
+                message: noticeMessageOverride ?? (loadMode == .economy ? deferredFullHistoryNotice(sessionID: session.id) : nil)
             )
         }
 
@@ -606,11 +617,39 @@ extension SessionStore {
         if let policyFailure = historyPolicyFailure(from: error) {
             switch job.loadMode {
             case .full:
+                // 低波及自适应缩页：仅当实际可分页的 thread/turns/list full
+                // 被 gateway 按体量阻断时才逐级缩页。老 agentd 回退到 thread/read 后
+                // limit 不会改变线上请求，不能误做 10→5→2→1 的重复全量读取。
+                // 从当前 full 页向下（10→5→2→1）重试完整历史，尽量多呈现真实完整内容；
+                // 缺少结构化线索或已缩到最小仍超限时，才回退缩略历史。
+                if policyFailure.reason == "history_response_too_large",
+                   policyFailure.method == "thread/turns/list",
+                   policyFailure.itemsView == "full",
+                   policyFailure.responseBytes != nil,
+                   let nextTurnPageLimit = nextFullTurnPageLimit(
+                       below: job.fullTurnPageLimit ?? fullHistoryTurnPageLadder.first ?? 10
+                   ) {
+                    let retryMessage = fullHistoryLadderRetryNotice(policyFailure)
+                    if !effectiveQuiet {
+                        setHistoryLoadNotice(sessionID: sessionID, kind: .loadingFull, message: retryMessage)
+                        setStatusMessage(retryMessage)
+                    }
+                    return await loadHistory(
+                        for: session,
+                        quiet: effectiveQuiet,
+                        loadMode: .full,
+                        force: true,
+                        reason: .automatic,
+                        successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.request_full_history"),
+                        recoveryGeneration: job.recoveryGeneration,
+                        fullTurnPageLimit: nextTurnPageLimit,
+                        noticeMessageOverride: effectiveQuiet ? nil : retryMessage
+                    )
+                }
                 if policyFailure.reason == "history_response_too_large", session.isRunning {
                     deferredFullHistorySessionIDs.insert(sessionID)
                 }
-                let message = deferredFullHistoryNotice(sessionID: sessionID)
-                    ?? L10n.text("ui.the_full_history_content_is_large_and_the")
+                let message = fullHistoryOversizeNotice(policyFailure, sessionID: sessionID)
                 if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                     setStatusMessage(message)
@@ -622,7 +661,8 @@ extension SessionStore {
                     force: true,
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_automatically_loaded"),
-                    recoveryGeneration: job.recoveryGeneration
+                    recoveryGeneration: job.recoveryGeneration,
+                    noticeMessageOverride: effectiveQuiet ? nil : message
                 )
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
@@ -771,10 +811,24 @@ extension SessionStore {
         } else {
             retryAfterNanoseconds = nil
         }
+        // gateway 在 history_response_too_large 时已带上被阻断的完整体量与 cap；
+        // 保留下来供界面展示结构化量级，而不是只显示泛化的“过程输出较大”。
+        let responseBytes = data?["responseBytes"]?.intValue
+        let maxResponseBytes = data?["maxResponseBytes"]?.intValue
+        let method = data?["method"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let itemsView = data?["itemsView"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         return HistoryPolicyFailure(
             reason: reason,
+            method: (method?.isEmpty == false) ? method : nil,
             retryAfterNanoseconds: retryAfterNanoseconds,
-            retryAfterSeconds: retryAfterSeconds
+            retryAfterSeconds: retryAfterSeconds,
+            responseBytes: (responseBytes.map { $0 > 0 } == true) ? responseBytes : nil,
+            maxResponseBytes: (maxResponseBytes.map { $0 > 0 } == true) ? maxResponseBytes : nil,
+            itemsView: (itemsView?.isEmpty == false) ? itemsView : nil
         )
     }
 
@@ -801,6 +855,57 @@ extension SessionStore {
             return seconds
         }
         return nil
+    }
+
+    /// 缩略提示里展示的历史体量。二进制步进、locale 无关（String(format:) 不本地化小数点），
+    /// 让 UI 文案与回归断言都稳定，例如 9,786,022 → “9.3 MB”、5,242,880 → “5.0 MB”。
+    nonisolated static func historyByteDescription(_ bytes: Int) -> String {
+        let value = max(0, bytes)
+        if value >= 1 << 20 {
+            return String(format: "%.1f MB", Double(value) / Double(1 << 20))
+        }
+        if value >= 1 << 10 {
+            return String(format: "%.0f KB", Double(value) / Double(1 << 10))
+        }
+        return "\(value) B"
+    }
+
+    /// full 首屏被 gateway cap 阻断时的缩略提示：优先展示结构化量级（完整体量 vs 上限），
+    /// 运行中与非运行中给出不同去向说明；缺量级时回退到既有泛化文案。
+    func fullHistoryOversizeNotice(_ failure: HistoryPolicyFailure, sessionID: SessionID) -> String {
+        let deferred = deferredFullHistoryNotice(sessionID: sessionID)
+        guard failure.reason == "history_response_too_large",
+              let responseBytes = failure.responseBytes,
+              let maxResponseBytes = failure.maxResponseBytes else {
+            return deferred ?? L10n.text("ui.the_full_history_content_is_large_and_the")
+        }
+        let full = Self.historyByteDescription(responseBytes)
+        let cap = Self.historyByteDescription(maxResponseBytes)
+        // deferred 非空 ⇔ 运行中且触发 too_large：完整历史会在 Turn 完成后自动恢复。
+        if deferred != nil {
+            return L10n.format("ui.full_history_exceeds_limit_running_value", full, cap)
+        }
+        return L10n.format("ui.full_history_exceeds_limit_value", full, cap)
+    }
+
+    /// 自适应缩页重试阶段的提示：仍在尝试加载完整历史，只是换更小的 turn 页，
+    /// 与最终回退缩略（fullHistoryOversizeNotice）区分开。
+    func fullHistoryLadderRetryNotice(_ failure: HistoryPolicyFailure) -> String {
+        guard let responseBytes = failure.responseBytes,
+              let maxResponseBytes = failure.maxResponseBytes else {
+            return L10n.text("ui.the_full_history_content_is_large_and_the")
+        }
+        return L10n.format(
+            "ui.full_history_exceeds_limit_retrying_value",
+            Self.historyByteDescription(responseBytes),
+            Self.historyByteDescription(maxResponseBytes)
+        )
+    }
+
+    /// full 自适应缩页的下一级 turn 页大小：取 ladder 中严格小于当前值的最大项；
+    /// 已到最小（1）则返回 nil，交由调用方回退缩略历史。不会重复相同参数。
+    func nextFullTurnPageLimit(below current: Int) -> Int? {
+        fullHistoryTurnPageLadder.first(where: { $0 < current })
     }
 
     func cancelHistoryLoadJob(_ job: HistoryLoadJob, sessionID: SessionID) {
@@ -1639,6 +1744,7 @@ extension SessionStore {
             try await sessionListPageFillingPresentationWindow(
                 client: client,
                 workspace: workspace,
+                runtimeProvider: "codex",
                 cursor: requestedCursor,
                 limit: limit,
                 consistency: consistency,
@@ -1689,11 +1795,12 @@ extension SessionStore {
         }
     }
 
-    /// transport 的 limit 约束 raw rows；子 Agent 过滤和双 Runtime 短页都可能让展示层不足一页。
+    /// transport 的 limit 约束 raw rows；子 Agent 过滤仍可能让展示层不足一页。
     /// 精确首屏与“显示更多”必须沿 opaque cursor 补齐顶层会话，child 仍随 raw rows 进入 canonical Store。
     func sessionListPageFillingPresentationWindow(
         client: any SessionStoreAPIClient,
         workspace: AgentWorkspace,
+        runtimeProvider: String,
         cursor initialCursor: String?,
         limit: Int,
         consistency: SessionListConsistency,
@@ -1745,6 +1852,7 @@ extension SessionStore {
             )
             let page = try await client.sessionsPage(
                 workspace: workspace,
+                runtimeProvider: runtimeProvider,
                 cursor: requestedCursor,
                 limit: rawPageLimit,
                 consistency: consistency

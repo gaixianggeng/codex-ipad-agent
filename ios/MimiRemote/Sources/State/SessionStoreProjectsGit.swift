@@ -104,6 +104,36 @@ extension SessionStore {
         return url
     }
 
+    // 超大过程输出只在用户主动打开时下载，并交给 QuickLook 渐进展示；
+    // 不把几 MB 的文本放回 SwiftUI 时间线的 Text 树，避免解析与布局卡顿。
+    func previewHistoryOutput(id: String) async throws -> URL {
+        let lease = try captureProjectsGitHostLease()
+        let profileID = mediaProfileScope
+        let response: FileReadResponse
+        do {
+            response = try await lease.client.readHistoryOutput(id: id)
+            try requireCurrentProjectsGitHost(lease)
+        } catch {
+            try requireCurrentProjectsGitHost(lease)
+            throw error
+        }
+        let url: URL
+        do {
+            url = try await MediaWorker.shared.previewURL(
+                from: MediaPreviewPayload(response: response),
+                profileID: profileID
+            )
+        } catch {
+            try requireCurrentProjectsGitHost(lease)
+            throw error
+        }
+        guard canApplyProjectsGitResult(lease) else {
+            await MediaWorker.shared.discardPreview(at: url)
+            throw CancellationError()
+        }
+        return url
+    }
+
     func refreshSelectedCommandActions() async {
         guard let path = selectedCommandActionPath?.trimmingCharacters(in: .whitespacesAndNewlines),
               !path.isEmpty
@@ -1493,6 +1523,7 @@ extension SessionStore {
             let page = try await sessionListPageFillingPresentationWindow(
                 client: lease.client,
                 workspace: workspace,
+                runtimeProvider: "codex",
                 cursor: cursor,
                 limit: Self.expandedSessionPageLimit,
                 consistency: .fastIndexed,
@@ -1531,6 +1562,49 @@ extension SessionStore {
             }
             setErrorMessage(error.localizedDescription)
         }
+    }
+
+    /// 工作区详情按 Runtime 独立分页。opaque cursor 原样归属于当前 Runtime，View 只缓存展示窗口；
+    /// canonical Store 仍吸收 raw rows，保证打开会话时已有正确的路由和上下文。
+    func workspaceRuntimeSessionsPage(
+        projectID: String,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int,
+        excludingListableSessionIDs: Set<SessionID> = []
+    ) async throws -> SessionsPage {
+        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+            throw CancellationError()
+        }
+        let lease = try captureProjectsGitHostLease()
+        let normalizedRuntime = Self.normalizedRuntimeProvider(runtimeProvider)
+        let page = try await sessionListPageFillingPresentationWindow(
+            client: lease.client,
+            workspace: workspace,
+            runtimeProvider: normalizedRuntime,
+            cursor: cursor,
+            limit: max(1, limit),
+            consistency: .authoritative,
+            source: cursor == nil ? .workspaceForeground : .workspaceLoadMore,
+            expectedHostScope: lease.scope,
+            excludingListableSessionIDs: excludingListableSessionIDs
+        )
+        try requireCurrentProjectsGitHost(lease)
+
+        let prepared = sessions(page.sessions, in: workspace).map(sessionPreparedForStorage)
+        mergeSessionPage(prepared)
+        clearWorkspaceUnavailable(workspace.id)
+
+        let listable = prepared.filter { session in
+            isListableSession(session)
+                && !excludingListableSessionIDs.contains(session.id)
+                && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == normalizedRuntime
+        }
+        return SessionsPage(
+            sessions: SessionIndexStore.sortedSessions(listable),
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore
+        )
     }
 
     func refreshSelectedProjectSessions(showLoading: Bool = true) async {

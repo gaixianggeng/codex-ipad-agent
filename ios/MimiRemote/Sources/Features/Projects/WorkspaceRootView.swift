@@ -2,7 +2,7 @@ import SwiftUI
 
 /// MeeGo / Harmattan 图标底板不是规则圆角矩形，也不是完全对称的超椭圆。
 /// 归一化 Bézier 控制点让上下边略平、左右边轻微收腰，并保留四角细微不同的饱满度。
-private struct WorkspaceIconMeeGoShape: Shape {
+struct WorkspaceIconMeeGoShape: Shape {
     func path(in rect: CGRect) -> Path {
         guard rect.width > 0, rect.height > 0 else { return Path() }
 
@@ -60,52 +60,120 @@ private struct WorkspaceIconMeeGoShape: Shape {
     }
 }
 
-enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
-    case codex
-    case claude
+/// 项目图标的唯一视觉实现。工作区胶囊、会话项目锚点和侧栏都复用它，
+/// 仅通过尺寸形成层级，不再各自维护底色、轮廓和 Emoji 比例。
+struct WorkspaceProjectIconTile: View {
+    @Environment(\.colorScheme) private var colorScheme
 
-    var id: String { rawValue }
+    let content: WorkspaceProjectIconContent
+    let size: CGFloat
+    let tokens: ThemeTokens
 
-    var runtimeProvider: String? {
-        switch self {
-        case .codex:
-            return nil
-        case .claude:
-            return "claude"
+    var body: some View {
+        Group {
+            switch content {
+            case let .character(character):
+                Image(character.assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(WorkspaceIconMeeGoShape())
+            case let .emoji(emoji):
+                Text(emoji)
+                    .font(.system(size: size * 0.58))
+                    .frame(width: size, height: size)
+                    .background(
+                        emojiTint(emoji).opacity(colorScheme == .dark ? 0.30 : 0.18),
+                        in: WorkspaceIconMeeGoShape()
+                    )
+            }
         }
+        .overlay {
+            WorkspaceIconMeeGoShape()
+                .stroke(
+                    tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42),
+                    lineWidth: size >= 20 ? 0.75 : 0.5
+                )
+        }
+        .accessibilityHidden(true)
     }
 
-    var title: String {
-        switch self {
-        case .codex:
-            return L10n.text("ui.create_a_new_codex_session")
-        case .claude:
-            return L10n.text("ui.create_a_new_claude_code_session")
-        }
-    }
-
-    var brandAssetName: String {
-        switch self {
-        case .codex:
-            return "ChatGPT"
-        case .claude:
-            return "Claude"
-        }
-    }
-
-    static func available(claudeChannelAvailable: Bool) -> [Self] {
-        claudeChannelAvailable ? [.codex, .claude] : [.codex]
+    private func emojiTint(_ emoji: String) -> Color {
+        let palette: [Color] = [
+            Color(red: 0.91, green: 0.63, blue: 0.48),
+            Color(red: 0.47, green: 0.67, blue: 0.78),
+            Color(red: 0.76, green: 0.64, blue: 0.42),
+            Color(red: 0.88, green: 0.72, blue: 0.34),
+            Color(red: 0.64, green: 0.70, blue: 0.48),
+            Color(red: 0.72, green: 0.53, blue: 0.72),
+        ]
+        return palette[WorkspaceAppearanceStore.tintIndex(for: emoji, count: palette.count)]
     }
 }
 
 enum WorkspaceStripLayout {
     static let horizontalPadding: CGFloat = 24
-    // 316pt 能容纳角色头像、路径和一行实时状态，同时在 iPad mini 上露出相邻卡片提示横向滚动。
-    static let cardWidth: CGFloat = 316
-    static let stripHeight: CGFloat = 166
+    /// 44pt 同时是 Apple 的最小命中尺寸和整条控件带的高度：选中项展开成带名称的胶囊，
+    /// 其余收缩成头像圆，因此一行就能放下全部工作区，不再需要 138pt 的卡片。
+    static let chipHeight: CGFloat = 44
+    static let chipSpacing: CGFloat = 8
+    /// 胶囊行 + 上下呼吸；工作区身份和状态改由下方状态行承担。
+    static let stripHeight: CGFloat = 60
+    /// 头像在展开与收缩两种形态下保持同一光学尺寸，切换时只有胶囊在变宽。
+    static let chipIconSize: CGFloat = 28
+    /// 胶囊行、状态行与详情内容共用同一个最大宽度，宽屏下三者左右边界一致。
+    static let maxContentWidth: CGFloat = 920
 
     static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
         max(0, viewportWidth - horizontalPadding * 2)
+    }
+
+    /// 粗略估算一行胶囊的总宽度，用来挑展开档位。
+    /// 只需要够准到"多展开一个会不会挤"，估偏了也不会让胶囊够不到——
+    /// 外层始终是可横向滚动的，这是它和 ViewThatFits 判定的关键区别。
+    static func estimatedRowWidth(names: [String], expandedNames: Set<String>) -> CGFloat {
+        guard !names.isEmpty else { return 0 }
+        let widths = names.map { name -> CGFloat in
+            guard expandedNames.contains(name) else { return chipHeight }
+            // 图标 + 间距 + 文字 + 左右内边距。CJK 按一个字 ~14pt、其余 ~7.5pt 估。
+            let textWidth = name.reduce(CGFloat.zero) { partial, character in
+                partial + (character.isASCII ? 7.5 : 14)
+            }
+            return chipIconSize + 8 + textWidth + 24
+        }
+        return widths.reduce(0, +) + chipSpacing * CGFloat(names.count - 1)
+    }
+
+    /// 把有限的“展开名称”名额以选中项为中心向两侧发放。
+    /// 名额为偶数时优先给右侧，符合从左到右的阅读顺序。
+    static func centeredNameWindow(
+        projectIDs: [String],
+        limit: Int,
+        aroundIndex selected: Int?
+    ) -> Set<String> {
+        guard limit > 0, !projectIDs.isEmpty else { return [] }
+        guard limit < projectIDs.count else { return Set(projectIDs) }
+
+        let center = selected.map { min(max($0, 0), projectIDs.count - 1) } ?? 0
+        var lower = center
+        var upper = center
+        var chosen = [center]
+
+        while chosen.count < limit {
+            let canGoUpper = upper + 1 < projectIDs.count
+            let canGoLower = lower - 1 >= 0
+            guard canGoUpper || canGoLower else { break }
+
+            if canGoUpper, chosen.count.isMultiple(of: 2) == false || !canGoLower {
+                upper += 1
+                chosen.append(upper)
+            } else if canGoLower {
+                lower -= 1
+                chosen.append(lower)
+            }
+        }
+
+        return Set(chosen.map { projectIDs[$0] })
     }
 }
 
@@ -128,21 +196,21 @@ enum WorkspaceSessionAgeBoundary {
 
 /// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
 struct WorkspaceSessionLoadInvocationTokens {
-    private var latestByProjectID: [String: UUID] = [:]
+    private var latestByKey: [WorkspaceSessionPresentationKey: UUID] = [:]
 
     @discardableResult
-    mutating func begin(for projectID: String) -> UUID {
+    mutating func begin(for key: WorkspaceSessionPresentationKey) -> UUID {
         let invocationID = UUID()
-        latestByProjectID[projectID] = invocationID
+        latestByKey[key] = invocationID
         return invocationID
     }
 
-    func isCurrent(_ invocationID: UUID, for projectID: String) -> Bool {
-        latestByProjectID[projectID] == invocationID
+    func isCurrent(_ invocationID: UUID, for key: WorkspaceSessionPresentationKey) -> Bool {
+        latestByKey[key] == invocationID
     }
 
-    mutating func remove(for projectID: String) {
-        latestByProjectID.removeValue(forKey: projectID)
+    mutating func remove(where shouldRemove: (WorkspaceSessionPresentationKey) -> Bool) {
+        latestByKey = latestByKey.filter { !shouldRemove($0.key) }
     }
 }
 
@@ -175,9 +243,8 @@ struct WorkspaceCatalogRefreshScope: Equatable {
 }
 
 struct WorkspaceSessionRefreshScope: Equatable {
-    let hostScope: HostScope
-    let workspaceID: String?
-    let needsAuthoritativeFirstPage: Bool
+    let presentationKey: WorkspaceSessionPresentationKey?
+    let needsInitialLoad: Bool
 }
 
 /// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
@@ -240,22 +307,28 @@ struct WorkspaceRootView: View {
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
+    let manageConnections: (() -> Void)?
     let embedsNavigationStack: Bool
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
+    @State private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice = .codex
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
-    @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
+    @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
+    @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
-    /// key 带 HostScope 和路径，避免跨 Mac 或目录身份迁移复用旧窗口。
+    /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
+    /// 胶囊行的真实可用宽度，用来挑展开档位。0 表示尚未量到。
+    @State private var measuredStripWidth: CGFloat = 0
 
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
+        manageConnections: (() -> Void)? = nil,
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
@@ -263,6 +336,7 @@ struct WorkspaceRootView: View {
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
+        self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
         self.currentDate = currentDate
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
@@ -281,11 +355,11 @@ struct WorkspaceRootView: View {
             hostScope: appStore.activeHostScope,
             credentialsSuspended: appStore.isCredentialMemorySuspended
         )
+        let selectedSessionPresentationKey = selectedProject.map(workspaceSessionPresentationKey(for:))
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
-            hostScope: appStore.activeHostScope,
-            workspaceID: selectedWorkspaceID,
-            needsAuthoritativeFirstPage: selectedWorkspaceID.map {
-                sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: $0)
+            presentationKey: selectedSessionPresentationKey,
+            needsInitialLoad: selectedSessionPresentationKey.map {
+                runtimeSessionPagesByKey[$0]?.hasLoadedFirstPage != true
             } ?? false
         )
 
@@ -323,20 +397,39 @@ struct WorkspaceRootView: View {
             await sessionStore.refreshAppServerModelOptions()
         }
         .task(id: sessionRefreshScope) {
-            guard let selectedWorkspaceID = sessionRefreshScope.workspaceID else { return }
-            // 稀疏缓存继续即时展示；只有 Store 记录了当前 HostScope 的 authoritative 首屏才可跳过请求。
-            guard sessionRefreshScope.needsAuthoritativeFirstPage else {
-                sessionLoadInvocationTokens.begin(for: selectedWorkspaceID)
-                sessionLoadStates[selectedWorkspaceID] = .loaded
-                return
+            guard sessionRefreshScope.needsInitialLoad,
+                  let presentationKey = sessionRefreshScope.presentationKey,
+                  let project = sessionStore.sidebarProjects.first(where: {
+                      $0.id == presentationKey.workspaceID && $0.path == presentationKey.workspacePath
+                  })
+            else { return }
+            await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
+        }
+        .task(id: neighborPrefetchScope) {
+            // 当前页优先：等它自己的 task 先占住 single-flight，再补相邻页。
+            for project in neighborWorkspaceProjects {
+                guard !Task.isCancelled else { return }
+                let presentationKey = workspaceSessionPresentationKey(for: project)
+                // 全局工作区可能已由会话库加载，但当前 Runtime 仍没有独立首屏；
+                // 预取必须按 Host、路径和 Runtime 的完整 key 判断，不能复用全局完成状态。
+                guard WorkspaceSessionPresentation.needsFirstPagePrefetch(
+                    cachedPageState: runtimeSessionPagesByKey[presentationKey]
+                ) else {
+                    continue
+                }
+                await refreshWorkspaceSessions(
+                    project: project,
+                    presentationKey: presentationKey
+                )
             }
-            await refreshWorkspaceSessions(
-                projectID: selectedWorkspaceID,
-                onlyIfAuthoritativeFirstPageIsNeeded: true
-            )
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeSelection()
+        }
+        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, isAvailable in
+            if !isAvailable, selectedSessionRuntime == .claude {
+                selectedSessionRuntime = .codex
+            }
         }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet { workspaceID in
@@ -374,22 +467,25 @@ struct WorkspaceRootView: View {
     private func navigationContent(tokens: ThemeTokens) -> some View {
         workspaceBrowser(tokens: tokens)
             .accessibilityIdentifier("workspace.browser")
-            .navigationTitle(L10n.text("ui.workspace"))
+            // 标题与底部 Tab 的“工作区”标签完全重复，白占一条 44pt 横带；
+            // 当前工作区的身份改由下方胶囊行表达。
+            // “打开目录”也从导航栏移到胶囊行末端——它和切换工作区是同一类操作，
+            // 分成上下两行只会在顶部留出一整条空白。
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isPresentingOpenWorkspace = true
-                    } label: {
-                        WorkbenchChromeIcon(systemName: "folder.badge.plus")
-                    }
-                    // 顶栏的栏目选中态已经承担品牌识别；全局目录操作使用系统中性材质，
-                    // 避免与选中工作区的梅紫填充形成两个大面积焦点。
-                    .foregroundStyle(tokens.primaryText)
-                    .accessibilityLabel(L10n.text("ui.open_directory"))
-                    .accessibilityIdentifier("workspace.toolbar.openDirectory")
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func openDirectoryButton(tokens: ThemeTokens) -> some View {
+        Button {
+            isPresentingOpenWorkspace = true
+        } label: {
+            WorkbenchChromeIcon(systemName: "folder.badge.plus")
+                .workbenchChromeCircle(tokens: tokens)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.secondaryText)
+        .accessibilityLabel(L10n.text("ui.open_directory"))
+        .accessibilityIdentifier("workspace.toolbar.openDirectory")
     }
 
     @ViewBuilder
@@ -404,22 +500,47 @@ struct WorkspaceRootView: View {
             VStack(spacing: 0) {
                 workspaceStrip(tokens: tokens)
 
-                Divider()
-                    .overlay(tokens.border.opacity(0.7))
-
-                if let selectedProject {
-                    workspaceDetail(project: selectedProject)
-                        .id(selectedProject.id)
-                        .refreshable {
-                            await refreshWorkspaceContent(projectID: selectedProject.id)
-                        }
-                } else {
-                    ContentUnavailableView(L10n.text("ui.please_select_a_workspace"), systemImage: "folder")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                // 原来这里是一条硬分割线。控件带与内容之间的边界改由 scroll edge effect 表达，
+                // 选中工作区的分支、Git 状态和活跃时间收进一行状态摘要。
+                projectPager(tokens: tokens)
             }
             .background(tokens.background.ignoresSafeArea())
         }
+    }
+
+    /// 每个工作区一页，横向分页切换。用 ScrollView 的分页行为而不是 TabView：
+    /// `scrollPosition(id:)` 是连续绑定，胶囊行能跟着滑动过程走；TabView 的 selection
+    /// 要等落定才更新，滑到一半上方胶囊不动、松手才跳，正好丢掉跟手感。
+    /// 分页物理特性（跟手、速度投射、可中断反向）由系统提供，不自己写 DragGesture。
+    private func projectPager(tokens: ThemeTokens) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 0) {
+                ForEach(sessionStore.sidebarProjects) { project in
+                    // 状态行下沉进详情视图，与会话列表共用同一组内边距并紧贴列表：
+                    // 它描述的是“这个列表属于哪个工作区”，悬在胶囊行下方会读成孤立的元数据。
+                    workspaceDetail(project: project) {
+                        workspaceStatusLine(project: project, tokens: tokens)
+                    }
+                    .refreshable {
+                        await refreshWorkspaceContent(projectID: project.id)
+                    }
+                    .containerRelativeFrame(.horizontal)
+                    // 离开视口中心的页面按进度缩小并变淡。scrollTransition 的相位跟着
+                    // 手指走，所以缩放是 1:1 可中断的，而不是松手后再播一段固定动画。
+                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                        content
+                            .scaleEffect(phase.isIdentity ? 1 : 0.93)
+                            .opacity(phase.isIdentity ? 1 : 0.55)
+                    }
+                    .id(project.id)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        // 直接绑定唯一的选择来源：点胶囊会滚动分页，滑动分页会回写胶囊选中态。
+        .scrollPosition(id: $selectedWorkspaceID, anchor: .center)
+        .scrollIndicators(.hidden)
     }
 
     private func workspaceLoadingState(tokens: ThemeTokens) -> some View {
@@ -501,6 +622,101 @@ struct WorkspaceRootView: View {
     }
 
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 8) {
+            if let manageConnections {
+                // 紧凑布局不能把 Host 切换器留在随后会被隐藏的系统导航栏里；
+                // 固定在自绘控件带首端，既保留连接管理入口，也不重新占用一整条顶栏。
+                HostSwitcherMenu(
+                    presentation: .toolbar,
+                    manageConnections: manageConnections
+                )
+                .workbenchChromeCircle(tokens: tokens)
+            }
+
+            ScrollViewReader { proxy in
+                // 收缩成头像是一种压缩手法：只有横向真的放不下时才该发生，
+                // 而且必须渐进——只有“全展开”和“只展开选中项”两档时，
+                // 项目一多就会整体跌到最压缩那一档，宽屏上白白浪费空间。
+                //
+                // 这里不用 ViewThatFits：它只会渲染被选中的那一个候选，
+                // 于是“放得下”的档位全都是不可滚动的 HStack，一旦估算与实际渲染有出入，
+                // 超出屏幕的胶囊就永远够不到。改成自己按可用宽度挑档位，
+                // 外层恒为 ScrollView，估偏了最多是多展开/少展开一个名字。
+                // 不用 GeometryReader：它会贪婪占满、首帧报 0 宽度，在离屏渲染
+                // （视觉快照）里和真机行为不一致。onGeometryChange 只观测已经排好的
+                // 真实宽度，不参与布局协商。
+                ScrollView(.horizontal, showsIndicators: false) {
+                    projectChips(
+                        expandedNameLimit: expandedNameLimit(forWidth: measuredStripWidth),
+                        tokens: tokens
+                    )
+                }
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: { newWidth in
+                    guard newWidth > 0, measuredStripWidth != newWidth else { return }
+                    measuredStripWidth = newWidth
+                }
+                .onChange(of: selectedWorkspaceID) { _, selectedID in
+                    guard let selectedID else { return }
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        proxy.scrollTo(selectedID, anchor: .center)
+                    }
+                }
+                .onAppear {
+                    guard let selectedWorkspaceID else { return }
+                    // 恢复已有选择时主动定位胶囊，保证选中项不会留在横向列表的屏幕外。
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(selectedWorkspaceID, anchor: .center)
+                    }
+                }
+            }
+
+            // “打开目录”与切换工作区是同一类操作，和胶囊行齐平；
+            // 它固定在行尾，不参与胶囊的横向滚动。
+            openDirectoryButton(tokens: tokens)
+        }
+        .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
+        .frame(height: WorkspaceStripLayout.stripHeight)
+        .accessibilityLabel(L10n.text("ui.workspace_list"))
+    }
+
+    /// 在给定宽度下能展开多少个名称。从最宽的档位往下退，取第一个装得下的。
+    private func expandedNameLimit(forWidth width: CGFloat) -> Int {
+        // 宽度尚未量到时按全展开渲染：胶囊行始终可横向滚动，
+        // 首帧偏宽只是多展开几个名字，而塌成 0 会让整行只剩一个胶囊。
+        guard width > 0 else { return .max }
+        let projects = sessionStore.sidebarProjects
+        guard !projects.isEmpty else { return 0 }
+
+        let names = projects.map(\.name)
+        let selectedIndex = projects.firstIndex { $0.id == selectedWorkspaceID }
+        let ids = projects.map(\.id)
+
+        for limit in [Int.max, 8, 6, 4, 3, 2, 1] {
+            let expandedIDs = WorkspaceStripLayout.centeredNameWindow(
+                projectIDs: ids,
+                limit: limit,
+                aroundIndex: selectedIndex
+            )
+            let expandedNames = Set(
+                zip(ids, names).compactMap { expandedIDs.contains($0.0) ? $0.1 : nil }
+            )
+            let estimate = WorkspaceStripLayout.estimatedRowWidth(
+                names: names,
+                expandedNames: expandedNames
+            )
+            if estimate <= width {
+                return limit
+            }
+        }
+        return 0
+    }
+
+    /// 各档位共用同一份胶囊构造，只有展开名称的数量不同；
+    /// 分支结构必须一致，否则 ViewThatFits 切换档位时会重建整行而不是平滑改宽。
+    /// `expandedNameLimit` 为 0 表示只展开选中项。
+    private func projectChips(expandedNameLimit: Int, tokens: ThemeTokens) -> some View {
         let profileID = appStore.activeHostScope.profileID
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
         let iconStyle = appearanceStore.style(profileID: profileID)
@@ -513,138 +729,201 @@ struct WorkspaceRootView: View {
             profileID: profileID,
             projectIDs: projectIDs
         )
+        // 名额以选中项为中心向两侧分配。从最左边开始发会让选中项右侧的邻居先被收缩，
+        // 视线跟着选择移动时出现断裂——这正是“滑到哪个才放大哪个”被破坏的原因。
+        let selectedIndex = sessionStore.sidebarProjects.firstIndex { $0.id == selectedWorkspaceID }
+        let expandedNameIDs = WorkspaceStripLayout.centeredNameWindow(
+            projectIDs: projectIDs,
+            limit: expandedNameLimit,
+            aroundIndex: selectedIndex
+        )
 
-        return ScrollViewReader { proxy in
-            GeometryReader { geometry in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 12) {
-                        if catalogLoad.state == .loading && sessionStore.sidebarProjects.isEmpty {
-                            ForEach(0..<4, id: \.self) { index in
-                                WorkspaceLibraryCard(
-                                    project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
-                                    profileID: profileID,
-                                    appearanceStore: appearanceStore,
-                                    iconStyle: iconStyle,
-                                    displayedCharacter: appearanceStore.character(
-                                        style: iconStyle,
-                                        profileID: profileID,
-                                        projectID: "loading-\(index)"
-                                    ),
-                                    displayedEmoji: appearanceStore.emoji(
-                                        profileID: profileID,
-                                        projectID: "loading-\(index)"
-                                    ),
-                                    unavailableCharacterIDs: [],
-                                    unavailableEmoji: [],
-                                    gitSummary: nil,
-                                    isGitSummaryLoading: true,
-                                    hasRunningSession: false,
-                                    lastActivityAt: nil,
-                                    currentDate: currentDate,
-                                    isUnavailable: false,
-                                    isSelected: false,
-                                    allowsCustomization: false,
-                                    tokens: tokens,
-                                    action: {},
-                                    onOpenGitChanges: {},
-                                    onConfirmRemove: {}
-                                )
-                                .frame(width: WorkspaceStripLayout.cardWidth)
-                                .redacted(reason: .placeholder)
-                            }
-                        } else {
-                            ForEach(sessionStore.sidebarProjects) { project in
-                                let projectSessions = sessionStore.sessions(forProjectID: project.id)
-                                let displayedCharacter = characterAssignments[project.id]
-                                    ?? appearanceStore.character(
-                                        style: iconStyle,
-                                        profileID: profileID,
-                                        projectID: project.id
-                                    )
-                                let displayedEmoji = emojiAssignments[project.id]
-                                    ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
-                                let unavailableCharacterIDs: Set<String> =
-                                    projectIDs.count
-                                        <= WorkspaceAppearanceStore.characters(for: iconStyle).count
-                                    ? Set(
-                                        characterAssignments.compactMap { otherProjectID, character in
-                                            otherProjectID == project.id ? nil : character.id
-                                        }
-                                    )
-                                    : []
-                                let unavailableEmoji: Set<String> =
-                                    projectIDs.count <= WorkspaceAppearanceStore.builtInEmoji.count
-                                    ? Set(
-                                        emojiAssignments.compactMap { otherProjectID, emoji in
-                                            otherProjectID == project.id ? nil : emoji
-                                        }
-                                    )
-                                    : []
-                                WorkspaceLibraryCard(
-                                    project: project,
-                                    profileID: profileID,
-                                    appearanceStore: appearanceStore,
-                                    iconStyle: iconStyle,
-                                    displayedCharacter: displayedCharacter,
-                                    displayedEmoji: displayedEmoji,
-                                    unavailableCharacterIDs: unavailableCharacterIDs,
-                                    unavailableEmoji: unavailableEmoji,
-                                    gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
-                                    isGitSummaryLoading: sessionStore.refreshingWorkspaceGitSummaryPaths.contains(project.path),
-                                    hasRunningSession: projectSessions.contains(where: \.isRunning),
-                                    lastActivityAt: workspaceActivityDate(projectID: project.id, sessions: projectSessions),
-                                    currentDate: currentDate,
-                                    isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
-                                    isSelected: selectedWorkspaceID == project.id,
-                                    allowsCustomization: true,
-                                    tokens: tokens
-                                ) {
-                                    // 工作区页面只更新本地浏览选择，避免切换卡片时意外改变当前会话上下文。
-                                    selectedWorkspaceID = project.id
-                                } onOpenGitChanges: {
-                                    gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
-                                } onConfirmRemove: {
-                                    removeWorkspace(project)
-                                }
-                                .frame(width: WorkspaceStripLayout.cardWidth)
-                                .id(project.id)
-                            }
-                        }
-                    }
-                    // 少量卡片作为一个组居中；卡片较多时 LazyHStack 按固有宽度增长，
-                    // 仍保持正常横向滚动和选中项定位。
-                    .frame(
-                        minWidth: WorkspaceStripLayout.minimumContentWidth(viewportWidth: geometry.size.width),
-                        alignment: .center
+        // 胶囊数量等于本机工作区数量，且每个都很轻；用 HStack 而不是 LazyHStack，
+        // 否则选中项展开时宽度动画会因为懒加载复用而跳变。
+        return HStack(spacing: WorkspaceStripLayout.chipSpacing) {
+            if catalogLoad.state == .loading && sessionStore.sidebarProjects.isEmpty {
+                ForEach(0..<4, id: \.self) { index in
+                    WorkspaceProjectChip(
+                        project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
+                        profileID: profileID,
+                        appearanceStore: appearanceStore,
+                        iconStyle: iconStyle,
+                        displayedCharacter: appearanceStore.character(
+                            style: iconStyle,
+                            profileID: profileID,
+                            projectID: "loading-\(index)"
+                        ),
+                        displayedEmoji: appearanceStore.emoji(
+                            profileID: profileID,
+                            projectID: "loading-\(index)"
+                        ),
+                        unavailableCharacterIDs: [],
+                        unavailableEmoji: [],
+                        gitSummary: nil,
+                        hasRunningSession: false,
+                        isUnavailable: false,
+                        isSelected: false,
+                        showsName: expandedNameLimit > 0,
+                        distanceFromSelection: 0,
+                        allowsCustomization: false,
+                        tokens: tokens,
+                        action: {},
+                        onOpenGitChanges: {},
+                        onConfirmRemove: {}
                     )
-                    .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
-                    .padding(.vertical, 14)
+                    .redacted(reason: .placeholder)
                 }
-            }
-            .frame(height: WorkspaceStripLayout.stripHeight)
-            .onChange(of: selectedWorkspaceID) { _, selectedID in
-                guard let selectedID else { return }
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    proxy.scrollTo(selectedID, anchor: .center)
-                }
-            }
-            .onAppear {
-                guard let selectedWorkspaceID else { return }
-                // 恢复已有选择时主动定位卡片，保证选中项不会留在横向列表的屏幕外。
-                DispatchQueue.main.async {
-                    proxy.scrollTo(selectedWorkspaceID, anchor: .center)
+            } else {
+                ForEach(sessionStore.sidebarProjects) { project in
+                    let projectSessions = sessionStore.sessions(forProjectID: project.id)
+                    let displayedCharacter = characterAssignments[project.id]
+                        ?? appearanceStore.character(
+                            style: iconStyle,
+                            profileID: profileID,
+                            projectID: project.id
+                        )
+                    let displayedEmoji = emojiAssignments[project.id]
+                        ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
+                    let unavailableCharacterIDs: Set<String> =
+                        projectIDs.count
+                            <= WorkspaceAppearanceStore.characters(for: iconStyle).count
+                        ? Set(
+                            characterAssignments.compactMap { otherProjectID, character in
+                                otherProjectID == project.id ? nil : character.id
+                            }
+                        )
+                        : []
+                    let unavailableEmoji: Set<String> =
+                        projectIDs.count <= WorkspaceAppearanceStore.builtInEmoji.count
+                        ? Set(
+                            emojiAssignments.compactMap { otherProjectID, emoji in
+                                otherProjectID == project.id ? nil : emoji
+                            }
+                        )
+                        : []
+                    WorkspaceProjectChip(
+                        project: project,
+                        profileID: profileID,
+                        appearanceStore: appearanceStore,
+                        iconStyle: iconStyle,
+                        displayedCharacter: displayedCharacter,
+                        displayedEmoji: displayedEmoji,
+                        unavailableCharacterIDs: unavailableCharacterIDs,
+                        unavailableEmoji: unavailableEmoji,
+                        gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
+                        hasRunningSession: projectSessions.contains(where: \.isRunning),
+                        isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
+                        isSelected: selectedWorkspaceID == project.id,
+                        showsName: expandedNameIDs.contains(project.id) || selectedWorkspaceID == project.id,
+                        distanceFromSelection: selectedIndex.map { abs(($0) - (projectIDs.firstIndex(of: project.id) ?? $0)) } ?? 0,
+                        allowsCustomization: true,
+                        tokens: tokens
+                    ) {
+                        // 工作区页面只更新本地浏览选择，避免切换胶囊时意外改变当前会话上下文。
+                        selectedWorkspaceID = project.id
+                    } onOpenGitChanges: {
+                        gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
+                    } onConfirmRemove: {
+                        removeWorkspace(project)
+                    }
+                    .id(project.id)
                 }
             }
         }
-        .accessibilityLabel(L10n.text("ui.workspace_list"))
+        // 这里不能加 maxWidth 约束：ViewThatFits 靠子视图的固有宽度判断放不放得下，
+        // 一旦声明 .infinity，展开态会永远“合身”，窄屏上就退不回压缩态。
+        .padding(.vertical, 8)
     }
 
-    private func workspaceDetail(project: AgentProject) -> some View {
-        let loadState = sessionLoadState(for: project.id)
+    /// 胶囊收缩后，选中工作区的分支、Git 状态和活跃时间集中在这一行。
+    /// 这些信息只描述当前选中项，因此固定在胶囊行下方，不随会话列表滚走。
+    private func workspaceStatusLine(project: AgentProject, tokens: ThemeTokens) -> some View {
+        let projectSessions = sessionStore.sessions(forProjectID: project.id)
+        let gitSummary = sessionStore.workspaceGitSummaryByPath[project.path]
+        let isGitSummaryLoading = sessionStore.refreshingWorkspaceGitSummaryPaths.contains(project.path)
+
+        return TimelineView(.periodic(from: .now, by: 60)) { _ in
+            // TimelineView 只负责按分钟触发刷新；时间来源可在视觉测试中固定。
+            let summary = WorkspaceStatusSummary.make(
+                gitSummary: gitSummary,
+                isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
+                hasRunningSession: projectSessions.contains(where: \.isRunning),
+                lastActivityAt: workspaceActivityDate(projectID: project.id, sessions: projectSessions),
+                now: currentDate()
+            )
+
+            // 分隔点只能出现在两个都存在的段之间。逐段自己带一个前导分隔符时，
+            // 缺少分支的非 Git 项目会以一个悬空的“·”开头。
+            let showsBranchSlot = summary.branch != nil || isGitSummaryLoading
+
+            HStack(spacing: 6) {
+                if let branch = summary.branch {
+                    Label(branch, systemImage: "point.3.connected.trianglepath.dotted")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else if isGitSummaryLoading {
+                    Capsule()
+                        .fill(tokens.elevatedSurface.opacity(0.56))
+                        .frame(width: 58, height: 10)
+                }
+
+                if let status = summary.status {
+                    if showsBranchSlot {
+                        statusSeparator(tokens: tokens)
+                    }
+                    // 只有真正需要注意的状态（有改动、落后、需重试）才着色；
+                    // “已同步”这类稳态用三级文字，不再为每种状态都点一颗彩色圆点。
+                    Text(status.text)
+                        .foregroundStyle(status.needsAttention ? status.color(tokens: tokens) : tokens.tertiaryText)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+
+                if let activity = summary.activityText {
+                    if showsBranchSlot || summary.status != nil {
+                        statusSeparator(tokens: tokens)
+                    }
+                    Text(activity)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+
+                Spacer(minLength: 0)
+            }
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
+            // 状态行现在渲染在会话列表容器内部，那层已经有横向内边距了；
+            // 这里再加一次会比筛选行和会话行多缩进一截。
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("workspace.statusLine")
+        }
+    }
+
+    private func statusSeparator(tokens: ThemeTokens) -> some View {
+        Text(verbatim: "·")
+            .foregroundStyle(tokens.tertiaryText)
+            .accessibilityHidden(true)
+    }
+
+    private func workspaceDetail<StatusLine: View>(
+        project: AgentProject,
+        @ViewBuilder statusLine: () -> StatusLine
+    ) -> some View {
         let presentationKey = workspaceSessionPresentationKey(for: project)
+        let cachedPageState = runtimeSessionPagesByKey[presentationKey]
+        // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
+        // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
+        let storedRuntimeSessions = sessionStore.sessions(forProjectID: project.id).filter { session in
+            sessionStore.isListableSession(session)
+                && CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+                    == presentationKey.runtimeProvider
+        }
+        let loadedSessions = cachedPageState?.reconciledSessions(with: storedRuntimeSessions) ?? storedRuntimeSessions
+        let loadState = sessionLoadState(for: presentationKey)
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
-        let loadedSessions = sessionStore.sessions(forProjectID: project.id)
         return WorkspaceDetailView(
+            statusLine: statusLine(),
             // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
             // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
             recentSessions: WorkspaceSessionPresentation.visibleSessions(
@@ -653,21 +932,18 @@ struct WorkspaceRootView: View {
             ),
             unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
-            // fastIndexed 可能是欠填的旧索引；必须等 authoritative 完成后再揭示缓存行，
-            // 避免先闪半截列表再随权威补页逐批增长。
-            hasCompleteFirstPage: WorkspaceSessionPresentation.hasCompleteFirstPage(
-                consistency: sessionStore.workspaceSessionFirstPageConsistency(projectID: project.id)
-            ),
+            hasInitialSessionContent: cachedPageState?.hasLoadedFirstPage == true || !storedRuntimeSessions.isEmpty,
             canLoadMoreSessions: WorkspaceSessionPresentation.canLoadMore(
                 loadedCount: loadedSessions.count,
                 visibleLimit: visibleLimit,
-                remoteHasMore: sessionStore.canLoadMoreSessions(projectID: project.id)
+                remoteHasMore: cachedPageState?.hasMore == true
             ),
+            selectedRuntime: $selectedSessionRuntime,
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {
-                    await refreshWorkspaceSessions(projectID: project.id)
+                    await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
                 }
             },
             onLoadMoreSessions: {
@@ -737,19 +1013,43 @@ struct WorkspaceRootView: View {
 
     private func removeWorkspace(_ project: AgentProject) {
         guard selectedWorkspaceID != project.id else { return }
-        sessionLoadStates.removeValue(forKey: project.id)
-        sessionLoadInvocationTokens.remove(for: project.id)
+        runtimeSessionPagesByKey = runtimeSessionPagesByKey.filter { $0.key.workspaceID != project.id }
+        sessionLoadStates = sessionLoadStates.filter { $0.key.workspaceID != project.id }
+        sessionLoadInvocationTokens.remove { $0.workspaceID == project.id }
         workspaceSessionVisibleLimitByKey = workspaceSessionVisibleLimitByKey.filter {
             $0.key.workspaceID != project.id
         }
         sessionStore.forgetWorkspace(project)
     }
 
+    /// LazyHStack 会预先构建左右相邻页；提前取回它们的首屏窗口，
+    /// 否则滑动落地时才开始请求，会先看到骨架屏再跳成列表。
+    /// 只取紧邻的前后各一页，且只取当前 Runtime——不做整库预热。
+    private var neighborWorkspaceProjects: [AgentProject] {
+        let projects = sessionStore.sidebarProjects
+        guard let index = projects.firstIndex(where: { $0.id == selectedWorkspaceID }) else {
+            return []
+        }
+        return [index - 1, index + 1]
+            .filter { projects.indices.contains($0) }
+            .map { projects[$0] }
+    }
+
+    private var neighborPrefetchScope: String {
+        (
+            [appStore.activeHostScope.profileID,
+             selectedSessionRuntime.rawValue,
+             selectedWorkspaceID ?? ""]
+                + neighborWorkspaceProjects.map(\.id)
+        ).joined(separator: "|")
+    }
+
     private func workspaceSessionPresentationKey(for project: AgentProject) -> WorkspaceSessionPresentationKey {
         WorkspaceSessionPresentationKey(
             hostScope: appStore.activeHostScope,
             workspaceID: project.id,
-            workspacePath: project.path
+            workspacePath: project.path,
+            runtimeProvider: selectedSessionRuntime.runtimeProvider
         )
     }
 
@@ -769,14 +1069,28 @@ struct WorkspaceRootView: View {
             current: currentVisibleLimit,
             pageSize: SessionStore.expandedSessionPageLimit
         )
-        let loadedCount = sessionStore.sessions(forProjectID: project.id).count
+        var pageState = runtimeSessionPagesByKey[presentationKey] ?? WorkspaceRuntimeSessionPageState()
+        let loadedCount = pageState.sessions.count
         if WorkspaceSessionPresentation.shouldRequestRemotePage(
             loadedCount: loadedCount,
             targetVisibleLimit: targetVisibleLimit,
-            remoteHasMore: sessionStore.canLoadMoreSessions(projectID: project.id)
+            remoteHasMore: pageState.hasMore
         ) {
-            // canonical 缓冲不足以再展示完整一页时才触发网络；否则“显示更多”只展开本地预取结果。
-            await sessionStore.loadMoreSessions(projectID: project.id)
+            do {
+                let page = try await sessionStore.workspaceRuntimeSessionsPage(
+                    projectID: project.id,
+                    runtimeProvider: presentationKey.runtimeProvider,
+                    cursor: pageState.nextCursor,
+                    limit: SessionStore.expandedSessionPageLimit,
+                    excludingListableSessionIDs: Set(pageState.sessions.map(\.id))
+                )
+                pageState.append(page)
+                runtimeSessionPagesByKey[presentationKey] = pageState
+                sessionLoadStates[presentationKey] = .loaded
+            } catch {
+                guard !isCancellationError(error) else { return }
+                sessionLoadStates[presentationKey] = .failed(error.localizedDescription)
+            }
         }
 
         guard appStore.activeHostScope == presentationKey.hostScope,
@@ -788,7 +1102,7 @@ struct WorkspaceRootView: View {
         workspaceSessionVisibleLimitByKey[presentationKey] = WorkspaceSessionPresentation.committedVisibleLimit(
             current: currentVisibleLimit,
             target: targetVisibleLimit,
-            loadedCount: sessionStore.sessions(forProjectID: project.id).count
+            loadedCount: runtimeSessionPagesByKey[presentationKey]?.sessions.count ?? pageState.sessions.count
         )
     }
 
@@ -829,57 +1143,79 @@ struct WorkspaceRootView: View {
         await refreshCatalog(forceGitSummary: true)
         guard !Task.isCancelled,
               selectedWorkspaceID == projectID,
-              sessionStore.sidebarProjects.contains(where: { $0.id == projectID })
+              let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
         else {
             return
         }
-        await refreshWorkspaceSessions(projectID: projectID)
+        let presentationKey = workspaceSessionPresentationKey(for: project)
+        await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
     }
 
     private func refreshWorkspaceSessions(
-        projectID: String,
-        onlyIfAuthoritativeFirstPageIsNeeded: Bool = false
+        project: AgentProject,
+        presentationKey: WorkspaceSessionPresentationKey
     ) async {
-        // `.loading` 只是 View 展示状态，不能证明仍有未取消的 waiter。每次调用都重新加入
-        // SessionStore 的共享请求，并用 invocation token 阻止旧调用覆盖新状态。
-        let invocationID = sessionLoadInvocationTokens.begin(for: projectID)
-        sessionLoadStates[projectID] = .loading
+        // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
+        let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
+        let canonicalSessionIDsBeforeLoad = Set<SessionID>(
+            sessionStore.sessions(forProjectID: project.id).compactMap { session in
+                guard sessionStore.isListableSession(session),
+                      CodexAppServerSessionRuntime.normalizedRuntimeProvider(
+                          session.runtimeProvider ?? session.source
+                      ) == presentationKey.runtimeProvider
+                else {
+                    return nil
+                }
+                return session.id
+            }
+        )
+        sessionLoadStates[presentationKey] = .loading
         do {
-            if onlyIfAuthoritativeFirstPageIsNeeded
-                || sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) {
-                // 手动刷新若接手到前一轮 partial，也必须沿保存 cursor 完成整条权威窗口；
-                // 已完成窗口仍走下面的普通单次刷新，保留“主动拉最新”的语义。
-                try await sessionStore.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: projectID)
-            } else {
-                try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
-            }
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+            let page = try await sessionStore.workspaceRuntimeSessionsPage(
+                projectID: project.id,
+                runtimeProvider: presentationKey.runtimeProvider,
+                cursor: nil,
+                limit: SessionStore.initialSessionPageLimit
+            )
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return
             }
-            guard !Task.isCancelled else {
-                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+            guard !Task.isCancelled,
+                  appStore.activeHostScope == presentationKey.hostScope,
+                  sessionStore.sidebarProjects.contains(where: {
+                      $0.id == project.id && $0.path == presentationKey.workspacePath
+                  })
+            else {
+                sessionLoadStates[presentationKey] = fallbackSessionLoadState(for: presentationKey)
                 return
             }
-            sessionLoadStates[projectID] = .loaded
+            var nextState = WorkspaceRuntimeSessionPageState()
+            nextState.replace(
+                with: page,
+                canonicalSessionIDsBeforeLoad: canonicalSessionIDsBeforeLoad
+            )
+            runtimeSessionPagesByKey[presentationKey] = nextState
+            workspaceSessionVisibleLimitByKey[presentationKey] = SessionStore.initialSessionPageLimit
+            sessionLoadStates[presentationKey] = .loaded
         } catch {
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return
             }
             switch workspaceSessionLoadFailureDisposition(error) {
             case .cancelled:
-                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+                sessionLoadStates[presentationKey] = fallbackSessionLoadState(for: presentationKey)
             case .failed(let message):
-                sessionLoadStates[projectID] = .failed(message)
+                sessionLoadStates[presentationKey] = .failed(message)
             }
         }
     }
 
-    private func sessionLoadState(for projectID: String) -> WorkspaceSessionLoadState {
-        sessionLoadStates[projectID] ?? fallbackSessionLoadState(for: projectID)
+    private func sessionLoadState(for key: WorkspaceSessionPresentationKey) -> WorkspaceSessionLoadState {
+        sessionLoadStates[key] ?? fallbackSessionLoadState(for: key)
     }
 
-    private func fallbackSessionLoadState(for projectID: String) -> WorkspaceSessionLoadState {
-        sessionStore.sessions(forProjectID: projectID).isEmpty ? .idle : .loaded
+    private func fallbackSessionLoadState(for key: WorkspaceSessionPresentationKey) -> WorkspaceSessionLoadState {
+        runtimeSessionPagesByKey[key]?.hasLoadedFirstPage == true ? .loaded : .idle
     }
 
 }
@@ -895,10 +1231,12 @@ private enum WorkspaceSessionLoadState: Equatable {
     }
 }
 
-private struct WorkspaceLibraryCard: View {
+/// 44pt 的项目胶囊：选中项展开成带名称的胶囊，其余收缩成头像圆，整行只占一条控件带。
+/// 原来 316×138pt 卡片上有三个可见操作，胶囊只留得下“选中”；Git 变更、换图标和移除目录
+/// 都是低频操作，收进长按菜单。分支与 Git 状态改由页面的状态行承担。
+private struct WorkspaceProjectChip: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
     let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
@@ -907,229 +1245,144 @@ private struct WorkspaceLibraryCard: View {
     let displayedEmoji: String
     let unavailableCharacterIDs: Set<String>
     let unavailableEmoji: Set<String>
+    /// 胶囊本身不再展示 Git 摘要；这里只用来决定“Git 变更”菜单项是否可用。
     let gitSummary: GitStatusResponse?
-    let isGitSummaryLoading: Bool
     let hasRunningSession: Bool
-    let lastActivityAt: Date?
-    let currentDate: () -> Date
     let isUnavailable: Bool
     let isSelected: Bool
+    /// 展开名称与选中是两件事：宽度够时所有胶囊都展开，选中仍只由亮度和字重表达。
+    let showsName: Bool
+    /// 距选中项的档数。只用来做透明度和图标微缩的衰减，不改变行高——
+    /// 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖动。
+    let distanceFromSelection: Int
     let allowsCustomization: Bool
     let tokens: ThemeTokens
     let action: () -> Void
     let onOpenGitChanges: () -> Void
     let onConfirmRemove: () -> Void
+
     @State private var isPresentingIconPicker = false
     @State private var isPresentingRemoveConfirmation = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Button(action: action) {
-                cardContent
-            }
-            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-            .accessibilityLabel(accessibilitySummary)
-
-            Menu {
-                Button(action: onOpenGitChanges) {
-                    Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
-                }
-                .disabled(gitSummary?.isRepository == false)
-                .accessibilityIdentifier("workspace.card.git.\(project.id)")
-
-                if allowsCustomization {
-                    Button {
-                        isPresentingIconPicker = true
-                    } label: {
-                        Label(L10n.text("ui.workspace_icon"), systemImage: iconStyle == .emoji ? "face.smiling" : "person.crop.square")
-                    }
-                }
-
-                if !isSelected {
-                    Button(role: .destructive) {
-                        isPresentingRemoveConfirmation = true
-                    } label: {
-                        Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
-                    }
-                    .accessibilityIdentifier("workspace.remove.request.\(project.id)")
-                }
-            } label: {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "ellipsis.circle")
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(isSelected ? tokens.secondaryText : tokens.tertiaryText)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.button)
-            .accessibilityLabel(L10n.text("ui.workspace_actions"))
-            .accessibilityIdentifier("workspace.card.actions.\(project.id)")
-            // iPad 会把 confirmationDialog 适配成 popover；必须挂在真实的 44pt 操作源上，
-            // 让系统在旋转和分栏宽度变化时从当前卡片计算箭头与安全区域，而不是使用整页根视图。
-            .confirmationDialog(
-                L10n.text("ui.remove_directory"),
-                isPresented: $isPresentingRemoveConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
-                    onConfirmRemove()
-                }
-                .accessibilityIdentifier("workspace.remove.confirm.\(project.id)")
-                Button(L10n.text("ui.cancel"), role: .cancel) {
-                    isPresentingRemoveConfirmation = false
-                }
-            } message: {
-                Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
-            }
-            .padding(.top, 4)
-            .padding(.trailing, 2)
-
-            if allowsCustomization {
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) {
-                        Button {
-                            isPresentingIconPicker = true
-                        } label: {
-                            Color.clear
-                                .frame(width: 52, height: 52)
-                                .contentShape(WorkspaceIconMeeGoShape())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("workspace.card.icon.\(project.id)")
-                        .accessibilityLabel(
-                            L10n.format(
-                                "ui.change_workspace_icon_value",
-                                project.name,
-                                currentIconName
-                            )
-                        )
-                        .popover(isPresented: $isPresentingIconPicker, arrowEdge: .top) {
-                            iconPicker
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.top, 14)
-                .padding(.leading, 14)
-            }
-        }
-    }
-
-    private var cardContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
+        Button(action: action) {
+            HStack(spacing: 8) {
                 iconTile
 
-                VStack(alignment: .leading, spacing: 5) {
+                if showsName {
                     Text(project.name)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
+                        .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
                         .lineLimit(1)
-                    Text(project.path)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .fixedSize()
                 }
-
-                Spacer(minLength: 8)
-                Color.clear.frame(width: 28, height: 1)
             }
-
-            Divider()
-                .overlay(
-                    isSelected
-                        ? tokens.primaryText.opacity(0.14)
-                        : tokens.border.opacity(0.56)
-                )
-
-            TimelineView(.periodic(from: .now, by: 60)) { _ in
-                // TimelineView 只负责按分钟触发刷新；时间来源可在视觉测试中固定，
-                // 生产环境默认仍由 Date.init 返回当前时刻。
-                metadataRow(now: currentDate())
+            .padding(.horizontal, showsName ? 12 : 8)
+            .frame(height: WorkspaceStripLayout.chipHeight)
+            // 选中与未选中共用同一块磨砂：差别只在中性提亮和是否展开名称，
+            // 一行里不会出现两种材质浓度。
+            .background {
+                WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens, isTinted: isSelected)
             }
+            // 波形衰减：越远离选中项越淡。只动透明度，不动行高——
+            // 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖。
+            .opacity(showsName ? 1 : max(0.42, 1 - Double(distanceFromSelection) * 0.16))
+            .contentShape(Capsule())
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
-        .background(
-            isSelected ? tokens.workspaceCardSelectionFill : tokens.contentPanelBackground,
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
-        .overlay {
-            if !isSelected {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .animation(
-            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.28, dampingFraction: 1),
-            value: isSelected
+            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.34, dampingFraction: 0.86),
+            value: showsName
         )
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.34, dampingFraction: 0.9),
+            value: distanceFromSelection
+        )
+        .contextMenu { contextActions }
+        .popover(isPresented: $isPresentingIconPicker, arrowEdge: .top) {
+            iconPicker
+        }
+        // iPad 会把 confirmationDialog 适配成 popover；挂在胶囊本身，
+        // 让系统在旋转和分栏宽度变化时按当前位置计算箭头，而不是使用整页根视图。
+        .confirmationDialog(
+            L10n.text("ui.remove_directory"),
+            isPresented: $isPresentingRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
+                onConfirmRemove()
+            }
+            .accessibilityIdentifier("workspace.remove.confirm.\(project.id)")
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                isPresentingRemoveConfirmation = false
+            }
+        } message: {
+            Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
+        }
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("workspace.card.\(project.id)")
+    }
+
+    @ViewBuilder
+    private var contextActions: some View {
+        Button(action: onOpenGitChanges) {
+            Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
+        }
+        .disabled(gitSummary?.isRepository == false)
+        .accessibilityIdentifier("workspace.card.git.\(project.id)")
+
+        if allowsCustomization {
+            Button {
+                isPresentingIconPicker = true
+            } label: {
+                Label(
+                    L10n.text("ui.workspace_icon"),
+                    systemImage: iconStyle == .emoji ? "face.smiling" : "person.crop.square"
+                )
+            }
+            .accessibilityIdentifier("workspace.card.icon.\(project.id)")
+        }
+
+        if !isSelected {
+            Button(role: .destructive) {
+                isPresentingRemoveConfirmation = true
+            } label: {
+                Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
+            }
+            .accessibilityIdentifier("workspace.remove.request.\(project.id)")
+        }
     }
 
     @ViewBuilder
     private var iconTile: some View {
-        if iconStyle.usesCharacters {
-            Image(displayedCharacter.assetName)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 52, height: 52)
-                .clipShape(WorkspaceIconMeeGoShape())
-                .overlay {
-                    // 角色图统一使用暖白底；这里只提供适配明暗模式的轮廓，不再叠加随机主题色。
-                    WorkspaceIconMeeGoShape()
-                        .stroke(tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42), lineWidth: 0.75)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    runningIndicator
-                }
-                .opacity(isUnavailable ? 0.62 : 1)
-                .accessibilityHidden(true)
-        } else {
-            let palette: [Color] = [
-                Color(red: 0.91, green: 0.63, blue: 0.48),
-                Color(red: 0.47, green: 0.67, blue: 0.78),
-                Color(red: 0.76, green: 0.64, blue: 0.42),
-                Color(red: 0.88, green: 0.72, blue: 0.34),
-                Color(red: 0.64, green: 0.70, blue: 0.48),
-                Color(red: 0.72, green: 0.53, blue: 0.72)
-            ]
-            let tint = palette[
-                WorkspaceAppearanceStore.tintIndex(for: displayedEmoji, count: palette.count)
-            ]
-
-            Text(displayedEmoji)
-                .font(.system(size: 30))
-                .frame(width: 52, height: 52)
-                .background(
-                    tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
-                    in: WorkspaceIconMeeGoShape()
-                )
-                .overlay(alignment: .bottomTrailing) {
-                    runningIndicator
-                }
-                .opacity(isUnavailable ? 0.62 : 1)
-                .accessibilityHidden(true)
+        let size = WorkspaceStripLayout.chipIconSize
+        WorkspaceProjectIconTile(
+            content: iconStyle.usesCharacters
+                ? .character(displayedCharacter)
+                : .emoji(displayedEmoji),
+            size: size,
+            tokens: tokens
+        )
+        .overlay(alignment: .topTrailing) {
+            runningIndicator
         }
+        .opacity(isUnavailable ? 0.62 : 1)
     }
 
     @ViewBuilder
     private var runningIndicator: some View {
         if hasRunningSession {
+            // 收缩态没有名称也没有状态行，这颗点是“这个工作区有会话在跑”的唯一信号，
+            // 因此用语义绿而不是原卡片上的中性灰——它不与选中态的梅紫争焦点。
             Circle()
-                .fill(tokens.secondaryText)
-                .frame(width: 11, height: 11)
+                .fill(tokens.success)
+                .frame(width: 9, height: 9)
                 .overlay {
                     Circle()
-                        .stroke(
-                            isSelected
-                                ? tokens.workspaceCardSelectionFill
-                                : tokens.contentPanelBackground,
-                            lineWidth: 2
-                        )
+                        .stroke(tokens.background, lineWidth: 1.5)
                 }
-                .offset(x: 1, y: 1)
+                .offset(x: 2, y: -2)
                 .accessibilityHidden(true)
         }
     }
@@ -1158,53 +1411,51 @@ private struct WorkspaceLibraryCard: View {
         }
     }
 
-    private var currentIconName: String {
-        iconStyle.usesCharacters ? displayedCharacter.name : displayedEmoji
+    private var accessibilitySummary: String {
+        let statusParts = [
+            isUnavailable ? L10n.text("ui.need_to_retry") : nil,
+            hasRunningSession ? L10n.text("ui.running") : nil
+        ].compactMap { $0 }
+        let status = statusParts.isEmpty
+            ? L10n.text("ui.git_status_unknown")
+            : statusParts.joined(separator: ", ")
+        let selected = isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
+        return L10n.format(
+            "ui.workspace_card_summary",
+            project.name,
+            project.path,
+            status,
+            selected
+        )
+    }
+}
+
+/// 选中工作区的分支、Git 状态和活跃时间。原来分散在卡片的 metadataRow 里，
+/// 卡片收缩成胶囊后由页面顶部的一行状态摘要统一承担。
+private struct WorkspaceStatusSummary {
+    let branch: String?
+    let status: WorkspaceCardStatus?
+    let activityText: String?
+
+    static func make(
+        gitSummary: GitStatusResponse?,
+        isUnavailable: Bool,
+        hasRunningSession: Bool,
+        lastActivityAt: Date?,
+        now: Date
+    ) -> WorkspaceStatusSummary {
+        WorkspaceStatusSummary(
+            branch: branch(from: gitSummary),
+            status: status(
+                gitSummary: gitSummary,
+                isUnavailable: isUnavailable,
+                hasRunningSession: hasRunningSession
+            ),
+            activityText: activityText(lastActivityAt: lastActivityAt, now: now)
+        )
     }
 
-    private func metadataRow(now: Date) -> some View {
-        HStack(spacing: 10) {
-            if let branch = gitBranch {
-                Label(branch, systemImage: "point.3.connected.trianglepath.dotted")
-                    .font(themeStore.uiFont(.caption2, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .frame(minHeight: 28)
-                    .background(tokens.elevatedSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            } else if isGitSummaryLoading {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(tokens.elevatedSurface.opacity(0.56))
-                    .frame(width: 58, height: 28)
-            }
-
-            if let status = cardStatus {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(status.color(tokens: tokens))
-                        .frame(width: 7, height: 7)
-                    Text(status.text)
-                        .lineLimit(1)
-                }
-                .font(themeStore.uiFont(.caption2, weight: .medium))
-                .foregroundStyle(tokens.secondaryText)
-                .fixedSize(horizontal: true, vertical: false)
-            }
-
-            Spacer(minLength: 4)
-
-            if let activity = activityText(now: now) {
-                Text(activity)
-                    .font(themeStore.uiFont(.caption2))
-                    .foregroundStyle(tokens.tertiaryText)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-    }
-
-    private var gitBranch: String? {
+    private static func branch(from gitSummary: GitStatusResponse?) -> String? {
         let branch = gitSummary?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let branch, !branch.isEmpty {
             return branch
@@ -1216,7 +1467,11 @@ private struct WorkspaceLibraryCard: View {
         return nil
     }
 
-    private var cardStatus: WorkspaceCardStatus? {
+    private static func status(
+        gitSummary: GitStatusResponse?,
+        isUnavailable: Bool,
+        hasRunningSession: Bool
+    ) -> WorkspaceCardStatus? {
         if isUnavailable {
             return WorkspaceCardStatus(text: L10n.text("ui.need_to_retry"), tone: .danger)
         }
@@ -1252,7 +1507,7 @@ private struct WorkspaceLibraryCard: View {
         return WorkspaceCardStatus(text: L10n.text("ui.clean_work_area"), tone: .success)
     }
 
-    private func activityText(now: Date) -> String? {
+    private static func activityText(lastActivityAt: Date?, now: Date) -> String? {
         guard let lastActivityAt else { return nil }
         let interval = max(0, now.timeIntervalSince(lastActivityAt))
         if interval < 5 * 60 {
@@ -1265,24 +1520,6 @@ private struct WorkspaceLibraryCard: View {
             return L10n.format("ui.hours_ago_value", Int(interval / 3600))
         }
         return L10n.format("ui.days_ago_value", Int(interval / (24 * 3600)))
-    }
-
-    private var accessibilitySummary: String {
-        let statusParts = [
-            hasRunningSession ? L10n.text("ui.running") : nil,
-            cardStatus?.text
-        ].compactMap { $0 }
-        let status = statusParts.isEmpty
-            ? L10n.text("ui.git_status_unknown")
-            : statusParts.joined(separator: ", ")
-        let selected = isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
-        return L10n.format(
-            "ui.workspace_card_summary",
-            project.name,
-            project.path,
-            status,
-            selected
-        )
     }
 }
 
@@ -1297,6 +1534,16 @@ private struct WorkspaceCardStatus {
 
     let text: String
     let tone: Tone
+
+    /// 只有需要用户处理的状态才配着色；已同步、干净这类稳态不该在状态行里发光。
+    var needsAttention: Bool {
+        switch tone {
+        case .warning, .danger:
+            return true
+        case .accent, .success, .secondary:
+            return false
+        }
+    }
 
     func color(tokens: ThemeTokens) -> Color {
         switch tone {
@@ -1315,228 +1562,40 @@ private struct WorkspaceCardStatus {
     }
 }
 
-private struct WorkspaceCharacterPicker: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let project: AgentProject
-    let profileID: String
-    @ObservedObject var appearanceStore: WorkspaceAppearanceStore
-    let style: WorkspaceIconStyle
-    let currentCharacterID: String
-    let unavailableCharacterIDs: Set<String>
-    let tokens: ThemeTokens
+/// 泛型视图不能持有静态存储属性，而每行重建 DateFormatter 又很贵；
+/// 这两个格式化器与具体视图无关，提到文件级共享一份。
+private enum WorkspaceSessionRowFormatters {
+    static let time: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("Hm")
+        return formatter
+    }()
 
-    private let columns = Array(repeating: GridItem(.fixed(52), spacing: 8), count: 5)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n.text("ui.workspace_icon"))
-                    .font(themeStore.uiFont(.headline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(project.name)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(WorkspaceAppearanceStore.characters(for: style)) { character in
-                    let isUnavailable = unavailableCharacterIDs.contains(character.id)
-                    Button {
-                        appearanceStore.setCustomCharacterID(
-                            character.id,
-                            style: style,
-                            profileID: profileID,
-                            projectID: project.id
-                        )
-                        dismiss()
-                    } label: {
-                        ZStack(alignment: .topTrailing) {
-                            Image(character.assetName)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 52, height: 52)
-                                .clipShape(WorkspaceIconMeeGoShape())
-                                .overlay {
-                                    WorkspaceIconMeeGoShape()
-                                        .stroke(tokens.border.opacity(0.5), lineWidth: 0.75)
-                                }
-                            if currentCharacterID == character.id {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryAction)
-                                    .background(tokens.surface, in: Circle())
-                            }
-                        }
-                    }
-                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-                    .disabled(isUnavailable)
-                    .opacity(isUnavailable ? 0.36 : 1)
-                    .accessibilityIdentifier("workspace.character.\(character.id)")
-                    .accessibilityLabel(character.name)
-                    .accessibilityAddTraits(currentCharacterID == character.id ? .isSelected : [])
-                }
-            }
-
-            Button {
-                appearanceStore.setCustomCharacterID(nil, profileID: profileID, projectID: project.id)
-                dismiss()
-            } label: {
-                Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
-            }
-            .font(themeStore.uiFont(.callout, weight: .medium))
-            .disabled(
-                appearanceStore.customCharacterID(profileID: profileID, projectID: project.id) == nil
-            )
-        }
-        .padding(18)
-        .frame(width: 336)
-        .background(tokens.surface)
-        .accessibilityIdentifier("workspace.characterPicker")
-    }
-
+    static let date: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("Md")
+        return formatter
+    }()
 }
 
-private struct WorkspaceEmojiPicker: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let project: AgentProject
-    let profileID: String
-    @ObservedObject var appearanceStore: WorkspaceAppearanceStore
-    let currentEmoji: String
-    let unavailableEmoji: Set<String>
-    let tokens: ThemeTokens
-    @State private var customInput = ""
-    @State private var validationMessage: String?
-
-    private let columns = Array(repeating: GridItem(.fixed(44), spacing: 8), count: 6)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n.text("ui.workspace_icon"))
-                    .font(themeStore.uiFont(.headline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(project.name)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(WorkspaceAppearanceStore.builtInEmoji, id: \.self) { emoji in
-                    let isUnavailable = unavailableEmoji.contains(emoji)
-                    Button {
-                        appearanceStore.setCustomEmoji(
-                            emoji,
-                            profileID: profileID,
-                            projectID: project.id
-                        )
-                        dismiss()
-                    } label: {
-                        ZStack(alignment: .topTrailing) {
-                            Text(emoji)
-                                .font(.system(size: 26))
-                                .frame(width: 44, height: 44)
-                                .background(
-                                    tokens.elevatedSurface.opacity(0.68),
-                                    in: WorkspaceIconMeeGoShape()
-                                )
-                            if currentEmoji == emoji {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryAction)
-                                    .background(tokens.surface, in: Circle())
-                            }
-                        }
-                    }
-                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-                    .disabled(isUnavailable)
-                    .opacity(isUnavailable ? 0.36 : 1)
-                    .accessibilityLabel(emoji)
-                    .accessibilityAddTraits(currentEmoji == emoji ? .isSelected : [])
-                }
-            }
-
-            Divider()
-                .overlay(tokens.border.opacity(0.6))
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n.text("ui.custom_emoji"))
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-
-                HStack(spacing: 8) {
-                    TextField(L10n.text("ui.enter_one_emoji"), text: $customInput)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 24))
-                        .submitLabel(.done)
-                        .onSubmit(applyCustomEmoji)
-
-                    Button(L10n.text("ui.apply"), action: applyCustomEmoji)
-                        .buttonStyle(.borderedProminent)
-                        .tint(tokens.primaryAction)
-                        .disabled(customInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-
-                if let validationMessage {
-                    Text(validationMessage)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.warning)
-                }
-            }
-
-            Button {
-                appearanceStore.setCustomEmoji(nil, profileID: profileID, projectID: project.id)
-                dismiss()
-            } label: {
-                Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
-            }
-            .font(themeStore.uiFont(.callout, weight: .medium))
-            .disabled(appearanceStore.customEmoji(profileID: profileID, projectID: project.id) == nil)
-        }
-        .padding(18)
-        .frame(width: 336)
-        .background(tokens.surface)
-        .accessibilityIdentifier("workspace.emojiPicker")
-        .onAppear {
-            customInput = appearanceStore.customEmoji(
-                profileID: profileID,
-                projectID: project.id
-            ) ?? ""
-        }
-    }
-
-    private func applyCustomEmoji() {
-        guard let emoji = WorkspaceAppearanceStore.normalizedEmoji(customInput) else {
-            validationMessage = L10n.text("ui.enter_one_valid_emoji")
-            return
-        }
-        guard !unavailableEmoji.contains(emoji) else {
-            validationMessage = L10n.text("ui.emoji_already_used")
-            return
-        }
-        appearanceStore.setCustomEmoji(emoji, profileID: profileID, projectID: project.id)
-        dismiss()
-    }
-}
-
-private struct WorkspaceDetailView: View {
+private struct WorkspaceDetailView<StatusLine: View>: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .body) private var actionButtonHeight: CGFloat = 68
     @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
     @State private var isLoadingMoreSessions = false
 
+    let statusLine: StatusLine
     let recentSessions: [AgentSession]
     let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
-    let hasCompleteFirstPage: Bool
+    let hasInitialSessionContent: Bool
     let canLoadMoreSessions: Bool
+    @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
@@ -1548,10 +1607,7 @@ private struct WorkspaceDetailView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // 项目名称、路径和状态已在上方选中卡片中展示，这里直接进入操作区，
-                // 避免同一屏重复一整套工作区摘要。
-                workspaceActions(tokens: tokens)
+            VStack(alignment: .leading, spacing: 14) {
                 recentSessionsSection(tokens: tokens)
             }
             .padding(.horizontal, 24)
@@ -1563,119 +1619,16 @@ private struct WorkspaceDetailView: View {
         .background(tokens.background.ignoresSafeArea())
     }
 
-    private func workspaceActions(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.text("ui.quick_operation"))
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-
-            // 创建会话是工作区页的主任务；只保留能直接开始工作的入口。
-            LazyVGrid(columns: actionColumns, spacing: 12) {
-                ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
-                    actionButton(
-                        choice: choice,
-                        tokens: tokens
-                    ) {
-                        // thread 创建时就绑定 runtime；这里必须把用户选择一路传到 SessionStore。
-                        onStartSession(choice)
-                    }
-                    // 未确认或未配置 Claude 通道时保留按钮位置但禁止误创建；能力返回后原位启用，
-                    // 页面不会再从单按钮突然跳成双按钮。
-                    .disabled(choice == .claude && !claudeChannelAvailable)
-                }
-            }
-        }
-    }
-
-    private var actionColumns: [GridItem] {
-        if horizontalSizeClass == .compact {
-            return [GridItem(.flexible(minimum: 0), spacing: 12)]
-        }
-        return [
-            GridItem(.flexible(minimum: 0), spacing: 12),
-            GridItem(.flexible(minimum: 0), spacing: 12)
-        ]
-    }
-
-    private func actionButton(
-        choice: WorkspaceSessionRuntimeChoice,
-        tokens: ThemeTokens,
-        action: @escaping () -> Void
-    ) -> some View {
-        let cornerRadius: CGFloat = 15
-
-        return Button(action: action) {
-            HStack(spacing: 12) {
-                actionIcon(choice: choice)
-
-                Text(choice.title)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-
-                Spacer(minLength: 8)
-            }
-            .padding(.horizontal, 14)
-            // 所有快捷入口共用同一个随 Dynamic Type 缩放的高度，视觉和触控面积保持一致。
-            .frame(maxWidth: .infinity, minHeight: actionButtonHeight, maxHeight: actionButtonHeight, alignment: .leading)
-            // 快捷入口是立即执行的动作；使用与输入面板同层的暖石墨填充，
-            // 在暖黑页面上形成明确但克制的内容层级。
-            .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-    }
-
-    @ViewBuilder
-    private func actionIcon(choice: WorkspaceSessionRuntimeChoice) -> some View {
-        // 只恢复运行时图标；操作卡片继续使用中性背景，不恢复 Codex 入口原来的深色强调底。
-        Image(choice.brandAssetName)
-            .resizable()
-            .renderingMode(.original)
-            .scaledToFit()
-            .frame(
-                width: choice == .codex ? 38 : 20,
-                height: choice == .codex ? 38 : 20
-            )
-            .frame(width: 38, height: 38)
-            .background(
-                choice == .codex
-                    ? Color.white
-                    : Color(red: 0.973, green: 0.949, blue: 0.914),
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-            )
-            .accessibilityHidden(true)
-    }
-
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(L10n.text("ui.recent_conversations"))
-                    .font(themeStore.uiFont(.headline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Spacer()
-                Button(action: onRefreshSessions) {
-                    HStack(spacing: 5) {
-                        if sessionLoadState.isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        Text(sessionLoadState.isLoading ? L10n.text("ui.loading") : L10n.text("ui.refresh"))
-                    }
-                    .font(themeStore.uiFont(size: compactActionFontSize, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                    // 手动刷新与“显示更多”同属会话列表操作；即使 caption 很短，也保留 44pt 触控区。
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(sessionLoadState.isLoading)
-                .accessibilityLabel(sessionLoadState.isLoading ? L10n.text("ui.loading_recent_conversations") : L10n.text("ui.refresh_recent_conversations"))
-            }
+            recentSessionsHeader(tokens: tokens)
 
-            if sessionLoadState.isLoading, !hasCompleteFirstPage {
+            // 工作区状态紧贴第一条会话行，与列表共用左右内边距：
+            // 它是这个列表的说明文字，夹在筛选行上方会重新读成悬空的元数据。
+            statusLine
+                .padding(.bottom, 2)
+
+            if sessionLoadState.isLoading, !hasInitialSessionContent {
                 // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
                 recentSessionPlaceholders(tokens: tokens)
             } else if recentSessions.isEmpty, case .failed(let message) = sessionLoadState {
@@ -1716,6 +1669,7 @@ private struct WorkspaceDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .sessionRowActions(session)
+                        .accessibilityIdentifier("workspace.session.\(session.id)")
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {
@@ -1755,13 +1709,48 @@ private struct WorkspaceDetailView: View {
                         .accessibilityIdentifier("workspace.sessions.loadMore")
                     }
                 }
-                .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(tokens.border.opacity(0.72), lineWidth: 1)
-                }
+                // 通栏行 + 发丝线，不再包一层圆角容器：会话列表是这一屏的主体，
+                // 外框只会在暗色页面上再画一道与内容无关的边界。
             }
         }
+    }
+
+    /// 一行同时承担两件事：左端用当前运行时开新会话，右端切换运行时。
+    /// Codex/Claude 这个维度整屏只出现一次，主操作也不再占用独立的大卡片。
+    private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 12) {
+            newSessionButton(tokens: tokens)
+
+            Spacer(minLength: 8)
+
+            WorkspaceRuntimePicker(
+                selection: $selectedRuntime,
+                claudeChannelAvailable: claudeChannelAvailable
+            )
+        }
+    }
+
+    private func newSessionButton(tokens: ThemeTokens) -> some View {
+        Button {
+            // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
+            onStartSession(selectedRuntime)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "square.and.pencil")
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
+                Text(L10n.text("ui.new_session"))
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(tokens.primaryText)
+            .padding(.horizontal, 14)
+            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget)
+            .background { WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens) }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(selectedRuntime.title)
+        .accessibilityIdentifier("workspace.sessions.newSession")
     }
 
     private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
@@ -1813,11 +1802,6 @@ private struct WorkspaceDetailView: View {
                         .padding(.leading, 48)
                 }
             }
-        }
-        .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tokens.border.opacity(0.72), lineWidth: 1)
         }
         .redacted(reason: .placeholder)
         .accessibilityElement(children: .ignore)
@@ -1950,22 +1934,9 @@ private struct WorkspaceDetailView: View {
     private func sessionTimeText(for session: AgentSession) -> String {
         guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
         if Calendar.current.isDate(date, inSameDayAs: currentDate()) {
-            return Self.sessionTimeFormatter.string(from: date)
+            return WorkspaceSessionRowFormatters.time.string(from: date)
         }
-        return Self.sessionDateFormatter.string(from: date)
+        return WorkspaceSessionRowFormatters.date.string(from: date)
     }
 
-    private static let sessionTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Hm")
-        return formatter
-    }()
-
-    private static let sessionDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("Md")
-        return formatter
-    }()
 }

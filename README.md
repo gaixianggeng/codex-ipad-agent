@@ -20,20 +20,23 @@
   &nbsp;·&nbsp;
   <a href="docs/project-status.md">Project status (Chinese)</a>
 </p>
+<p align="center">
+    <a href="https://testflight.apple.com/join/jhGPbSk6"><img src="https://img.shields.io/badge/TestFlight-Join%20Beta-0D96F6?logo=apple&amp;logoColor=white" alt="Join the Mimi Remote beta on TestFlight" /></a>
+</p>
 
 <p align="center">
-  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple" alt="iOS and iPadOS 26 or later" /></a>
+  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-18%2B-black?logo=apple" alt="iOS and iPadOS 18 or later" /></a>
   <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="Native SwiftUI app" /></a>
   <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 with store distribution exception" /></a>
 </p>
 
 <p align="center">
-  <img src="artifacts/app-screenshots/ipad-pro-devicehub-2026-07-27-workbench.png" alt="Mimi Remote showing a wide Codex workbench on a real iPad Pro" width="100%" />
+  <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/workspace.png" alt="Mimi Remote workspace on iPad" width="100%" />
 </p>
 
 <p align="center">
-  <sub>A real iPad Pro, a real Debug build, and public demo data — no mockup UI.</sub>
+  <sub>Current Mimi Remote UI on iPad, prepared from physical-device captures with public demo data.</sub>
 </p>
 
 Mimi Remote connects directly to your Mac through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your Mac remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.
@@ -55,15 +58,15 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/iphone-devicehub-2026-07-27-conversation.png" alt="Mimi Remote conversation on a real iPhone 17 Pro" width="58%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/iphone/en-US/conversation.png" alt="Mimi Remote conversation on iPhone" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-mini-devicehub-2026-07-27-queue.png" alt="Mimi Remote queued follow-ups on a real iPad mini" width="72%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/sessions.png" alt="Mimi Remote session list on iPad" width="72%" />
     </td>
   </tr>
 </table>
 
-All three images were captured from the same source tree on physical devices through Xcode Device Hub. The Debug-only seed uses `/Users/demo`, placeholder credentials, and public demo copy; no personal repository, access token, endpoint, or Tailnet address is shown. See the [screenshot manifest](artifacts/app-screenshots/manifest.md).
+The current screenshot set covers workspace, conversation, session list, settings with token usage, and Mac connection in English and Simplified Chinese on iPhone and iPad. It uses `/Users/demo`, placeholder credentials, and public demo copy; no personal repository, access token, endpoint, or Tailnet address is shown. See the [MIM-80 submission manifest](artifacts/app-store/mim-80-submission/1.1/README.md).
 
 ## Leave the desk, not the flow
 
@@ -92,20 +95,20 @@ Mimi Remote keeps the same project and session model across devices, but each su
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>Projects are first-class</strong><br />
-      <sub>Project state, quick starts, and recent conversations share one continuous workspace.</sub>
+      <strong>Usage stays visible</strong><br />
+      <sub>Token usage, language, appearance, and permissions stay in one focused settings surface.</sub>
     </td>
     <td width="50%" align="center">
-      <strong>Settings keep your place</strong><br />
-      <sub>Quota, connectivity, language, appearance, and permissions open over the current context.</sub>
+      <strong>Mac connection is explicit</strong><br />
+      <sub>Pairing status and host connectivity are visible before you start remote work.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-workspace.png" alt="Mimi Remote project workspace on an iPad Pro simulator" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/settings.png" alt="Mimi Remote settings and token usage on iPad" width="100%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-settings.png" alt="Mimi Remote settings sheet over the current iPad workbench" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/mac-connection.png" alt="Mimi Remote Mac connection settings on iPad" width="100%" />
     </td>
   </tr>
 </table>
@@ -125,7 +128,7 @@ The hierarchy is intentional:
 - **Show state before action:** connection health, runtime readiness, remaining quota, and permission mode are visible before controls that can change or interrupt work.
 - **Use each platform natively:** compact touch hierarchy on iPhone, multi-column workbench on iPad, and a dense menu bar utility on Mac — not one layout stretched across three screens.
 
-The two iPad detail images were captured from the current Debug build on a reused iPad Pro simulator. The Mac image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname. The installed Mac service was not restarted or replaced. See the [screenshot manifest](artifacts/app-screenshots/manifest.md).
+The two iPad detail images come from the current MIM-80 physical-device screenshot set. The Mac menu image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname. The installed Mac service was not restarted or replaced. See the [MIM-80 submission manifest](artifacts/app-store/mim-80-submission/1.1/README.md).
 
 ## Architecture
 
@@ -183,7 +186,7 @@ This shape keeps deployment small and auditable, but the tradeoff is explicit: t
 
 Check these before you install:
 
-- **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
+- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
@@ -277,7 +280,7 @@ Ask `$skill-installer` to install that GitHub path. Each GitHub Release also inc
 
 ### Install the iOS app
 
-Mimi Remote requires iOS/iPadOS 26 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path.
+Mimi Remote requires iOS/iPadOS 18 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path. iOS 26+ gets the full advanced visual and on-device speech experience; earlier supported systems use deliberate fallbacks for unsupported capabilities.
 
 To build the app from source instead, use a Mac with Xcode 26 or later and install XcodeGen before generating the Xcode project:
 

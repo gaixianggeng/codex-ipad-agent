@@ -132,8 +132,10 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 		return appServerGatewayPendingHistoryRequest{
 			method: method, cwd: cwd, cursor: gatewayOptionalStringParam(params, "cursor"),
 			limit: gatewayOptionalInt64Param(params, "limit"), sortKey: gatewayOptionalStringParam(params, "sortKey"),
-			sortDirection: gatewayOptionalStringParam(params, "sortDirection"),
-			itemsView:     "list", useStateDBOnly: gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
+			sortDirection:  gatewayOptionalStringParam(params, "sortDirection"),
+			itemsView:      "list",
+			useStateDBOnly: gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
+			refreshHistory: gatewayOptionalBoolFingerprintParam(params, "refreshHistory"),
 		}, true
 	case "thread/search":
 		// 搜索没有 cwd/threadId，请求指纹必须包含完整的安全参数；预算 subject 则使用固定
@@ -203,11 +205,13 @@ func gatewayHistoryRequestFingerprint(runtimeID string, request appServerGateway
 		SortDirection  string `json:"sortDirection,omitempty"`
 		ItemsView      string `json:"itemsView,omitempty"`
 		UseStateDBOnly string `json:"useStateDbOnly,omitempty"`
+		RefreshHistory string `json:"refreshHistory,omitempty"`
 		Filter         string `json:"filter,omitempty"`
 	}{
 		Runtime: normalizeAppServerRuntimeID(runtimeID), Method: request.method, ThreadID: request.threadID,
 		CWD: request.cwd, Cursor: request.cursor, Limit: request.limit, SortKey: request.sortKey, SortDirection: request.sortDirection,
-		ItemsView: request.itemsView, UseStateDBOnly: request.useStateDBOnly, Filter: request.filterFingerprint,
+		ItemsView: request.itemsView, UseStateDBOnly: request.useStateDBOnly,
+		RefreshHistory: request.refreshHistory, Filter: request.filterFingerprint,
 	})
 	return string(encoded)
 }

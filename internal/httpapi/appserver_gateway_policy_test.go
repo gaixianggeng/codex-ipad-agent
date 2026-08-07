@@ -904,7 +904,6 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		`{"method":"initialized","params":{` + dangerousTail + `}}`,
 		`{"id":61,"method":"model/list","params":{` + dangerousTail + `}}`,
 		`{"id":62,"method":"account/rateLimits/read","params":{` + dangerousTail + `}}`,
-		`{"id":63,"method":"account/usage/read","params":{` + dangerousTail + `}}`,
 	}
 	for _, frame := range emptyParamFrames {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
@@ -912,6 +911,17 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		}
 		params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
 		assertGatewayParamsOnly(t, params)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":63,"method":"account/usage/read","params":{`+dangerousTail+`}}`)); err != nil {
+		t.Fatal(err)
+	}
+	accountUsageFrame := readUpstreamFrame(t, received)
+	var accountUsageEnvelope map[string]json.RawMessage
+	if err := json.Unmarshal(accountUsageFrame, &accountUsageEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := accountUsageEnvelope["params"]; ok {
+		t.Fatalf("account/usage/read 转发前应完整移除 params：%s", accountUsageFrame)
 	}
 
 	pluginList := []byte(fmt.Sprintf(`{"id":621,"method":"plugin/installed","params":{"cwds":[%q],"unknown":"drop"}}`, projectDir))

@@ -165,7 +165,7 @@ func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testin
 }
 
 func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
-	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.1.9")
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.6")
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
@@ -177,10 +177,10 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	claude := body["channels"].([]any)[1].(map[string]any)
 	bridge := claude["bridge"].(map[string]any)
 	capabilities := claude["capabilities"].(map[string]any)
-	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.1.9" {
+	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.2.6" {
 		t.Fatalf("旧 Claude bridge 必须 fail closed：%v", claude)
 	}
-	if bridge["minimum_version"] != "0.2.1" || !strings.Contains(bridge["fix"].(string), "cargo install") {
+	if bridge["minimum_version"] != "0.2.7" || !strings.Contains(bridge["fix"].(string), "cargo install") {
 		t.Fatalf("旧 bridge 应返回最低版本和可执行修复提示：%v", bridge)
 	}
 	if capabilities["rate_limits"] != false {
@@ -199,8 +199,8 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	defer conn.Close()
 	raw := readGatewayRaw(t, conn)
 	if !bytes.Contains(raw, []byte(`"code":"CLAUDE_BRIDGE_VERSION_UNSUPPORTED"`)) ||
-		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.1.9"`)) ||
-		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.1"`)) ||
+		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.2.6"`)) ||
+		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.7"`)) ||
 		!bytes.Contains(raw, []byte(`"fix":"cargo install`)) {
 		t.Fatalf("旧 bridge WS 错误应包含结构化版本诊断：%s", raw)
 	}
@@ -210,7 +210,7 @@ func TestClaudeBridgeProbeRejectsMissingStandardVersion(t *testing.T) {
 	bridgePath := writeTestBridgeWithVersion(t, "")
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
 	probe := router.refreshClaudeBridgeProbe(true)
-	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.1") {
+	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.7") {
 		t.Fatalf("无标准 --version 的 bridge 必须 fail closed：%+v", probe)
 	}
 }
@@ -1341,6 +1341,142 @@ func TestAppServerGatewayRejectsUnsafeMethodWithoutForwarding(t *testing.T) {
 	assertNoUpstreamFrame(t, received)
 }
 
+func TestAppServerGatewayCachesAccountTokenUsageAcrossConnections(t *testing.T) {
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var request appServerGatewayFrame
+		if json.Unmarshal(payload, &request) != nil || request.Method != "account/usage/read" {
+			return
+		}
+		response, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result": map[string]any{
+				"summary": map[string]any{"lifetimeTokens": 123456},
+				"dailyUsageBuckets": []map[string]any{{
+					"startDate": "2026-08-06",
+					"tokens":    789,
+				}},
+			},
+		})
+		_ = conn.WriteMessage(messageType, response)
+	})
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	first := dialAuthedGateway(t, server.URL)
+	if err := first.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	firstResponse := readGatewayRaw(t, first)
+	if !bytes.Contains(firstResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("首次上游响应应返回 Token 快照：%s", firstResponse)
+	}
+	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"method":"account/usage/read"`)) {
+		t.Fatalf("首次请求应转发到 upstream：%s", got)
+	}
+	_ = first.Close()
+
+	second := dialAuthedGateway(t, server.URL)
+	defer second.Close()
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	secondResponse := readGatewayRaw(t, second)
+	var cached struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(secondResponse, &cached); err != nil {
+		t.Fatal(err)
+	}
+	if string(cached.ID) != "2" || !bytes.Contains(cached.Result, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("缓存响应必须替换为当前请求 id 并保留快照：%s", secondResponse)
+	}
+	assertNoUpstreamFrame(t, received)
+
+	// 用户点击刷新时必须绕过仍在 TTL 内的快照；私有提示不能泄露给严格校验的上游 schema。
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":3,"method":"account/usage/read","params":{"mimiForceRefresh":true}}`)); err != nil {
+		t.Fatal(err)
+	}
+	forcedResponse := readGatewayRaw(t, second)
+	if !bytes.Contains(forcedResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("强制刷新应返回真实上游快照：%s", forcedResponse)
+	}
+	forcedUpstream := readUpstreamFrame(t, received)
+	var forwarded map[string]json.RawMessage
+	if err := json.Unmarshal(forcedUpstream, &forwarded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := forwarded["params"]; ok || !bytes.Contains(forcedUpstream, []byte(`"id":3`)) {
+		t.Fatalf("强制刷新应转发到 upstream 且剥离私有 params：%s", forcedUpstream)
+	}
+
+	// 12 小时以内仍由当前 Mac 的 agentd 统一返回缓存，多台设备不会各自重查上游。
+	router.accountTokenUsageMu.Lock()
+	router.accountTokenUsageCachedAt = time.Now().Add(-defaultAccountTokenUsageCacheTTL + time.Minute)
+	router.accountTokenUsageMu.Unlock()
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":4,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	withinTTLResponse := readGatewayRaw(t, second)
+	if !bytes.Contains(withinTTLResponse, []byte(`"lifetimeTokens":123456`)) {
+		t.Fatalf("12 小时内应继续返回服务端缓存：%s", withinTTLResponse)
+	}
+	assertNoUpstreamFrame(t, received)
+
+	// 超过 12 小时后恢复真实上游读取，确保缓存不会永久冻结展示数据。
+	router.accountTokenUsageMu.Lock()
+	router.accountTokenUsageCachedAt = time.Now().Add(-defaultAccountTokenUsageCacheTTL - time.Minute)
+	router.accountTokenUsageMu.Unlock()
+	if err := second.WriteMessage(websocket.TextMessage, []byte(`{"id":5,"method":"account/usage/read"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = readGatewayRaw(t, second)
+	if got := readUpstreamFrame(t, received); !bytes.Contains(got, []byte(`"id":5`)) {
+		t.Fatalf("过期请求应重新转发到 upstream：%s", got)
+	}
+}
+
+func TestAppServerGatewayDoesNotCacheFailedAccountTokenUsage(t *testing.T) {
+	var requests atomic.Int64
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var request appServerGatewayFrame
+		if json.Unmarshal(payload, &request) != nil || request.Method != "account/usage/read" {
+			return
+		}
+		requests.Add(1)
+		response, _ := json.Marshal(map[string]any{
+			"id": request.ID,
+			"error": map[string]any{
+				"code":    -32000,
+				"message": "usage unavailable",
+			},
+		})
+		_ = conn.WriteMessage(messageType, response)
+	})
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	for _, id := range []int{10, 11} {
+		request := fmt.Sprintf(`{"id":%d,"method":"account/usage/read"}`, id)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+			t.Fatal(err)
+		}
+		response := readGatewayRaw(t, conn)
+		if !bytes.Contains(response, []byte(`"usage unavailable"`)) {
+			t.Fatalf("失败响应应原样返回：%s", response)
+		}
+		_ = readUpstreamFrame(t, received)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("失败响应不能进入缓存，upstream requests=%d", requests.Load())
+	}
+}
+
 func TestAppServerGatewayRejectsUnauthorizedThreadIDWithoutForwarding(t *testing.T) {
 	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
 	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
@@ -1599,19 +1735,39 @@ func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
 		"sortDirection":  "desc",
 		"sourceKinds":    []any{"cli", "vscode", "appServer", "subAgent"},
 		"useStateDbOnly": true,
+		"refreshHistory": false,
 		"unsafe":         "drop-me",
 	}
 	if err := validateGatewayThreadListParams(params); err != nil {
 		t.Fatalf("thread/list 合法快速路径参数不应被拒绝：%v", err)
 	}
 
-	sanitized := sanitizedGatewayThreadListParams(params)
+	sanitized := sanitizedGatewayThreadListParams("codex", params)
 	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "sortKey", "sortDirection", "sourceKinds", "useStateDbOnly")
 	if sanitized["useStateDbOnly"] != true {
 		t.Fatalf("thread/list 应保留 useStateDbOnly：%v", sanitized)
 	}
 	if sanitized["sortKey"] != "recency_at" {
 		t.Fatalf("thread/list 应保留 recency_at：%v", sanitized)
+	}
+}
+
+func TestGatewayThreadListAllowsExplicitHistoryRefreshOnFirstPage(t *testing.T) {
+	params := map[string]any{
+		"cwd":            "/tmp/project",
+		"limit":          json.Number("20"),
+		"useStateDbOnly": false,
+		"refreshHistory": true,
+		"unsafe":         "drop-me",
+	}
+	if err := validateGatewayThreadListParams(params); err != nil {
+		t.Fatalf("thread/list 合法显式历史刷新不应被拒绝：%v", err)
+	}
+
+	sanitized := sanitizedGatewayThreadListParams("claude", params)
+	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "useStateDbOnly", "refreshHistory")
+	if sanitized["refreshHistory"] != true {
+		t.Fatalf("thread/list 应保留 refreshHistory：%v", sanitized)
 	}
 }
 
@@ -1631,6 +1787,15 @@ func TestGatewayThreadListFingerprintIncludesSortKey(t *testing.T) {
 	if gatewayHistoryRequestFingerprint("codex", updated) == gatewayHistoryRequestFingerprint("codex", recency) {
 		t.Fatal("不同 sortKey 的 thread/list 不能共享并发请求指纹")
 	}
+	refresh, ok := gatewayHistoryRequestFromParams("thread/list", map[string]any{
+		"cwd": "/tmp/project", "limit": json.Number("20"), "sortKey": "updated_at", "refreshHistory": true,
+	})
+	if !ok {
+		t.Fatal("显式刷新的 thread/list 应进入历史请求指纹")
+	}
+	if gatewayHistoryRequestFingerprint("claude", updated) == gatewayHistoryRequestFingerprint("claude", refresh) {
+		t.Fatal("普通列表与显式历史刷新不能共享并发请求指纹")
+	}
 }
 
 func TestGatewayThreadListRejectsUnsafeFastPathParams(t *testing.T) {
@@ -1641,6 +1806,9 @@ func TestGatewayThreadListRejectsUnsafeFastPathParams(t *testing.T) {
 	}{
 		{name: "limit over hard max", params: map[string]any{"limit": json.Number("51")}, want: "不能超过 50"},
 		{name: "state db flag must be bool", params: map[string]any{"useStateDbOnly": "true"}, want: "必须是布尔值"},
+		{name: "refresh flag must be bool", params: map[string]any{"refreshHistory": "true"}, want: "必须是布尔值"},
+		{name: "refresh only on first page", params: map[string]any{"refreshHistory": true, "cursor": "next"}, want: "只允许用于首屏"},
+		{name: "refresh rejects state db fast path", params: map[string]any{"refreshHistory": true, "useStateDbOnly": true}, want: "不能与 useStateDbOnly=true"},
 		{name: "source kinds must be array", params: map[string]any{"sourceKinds": "subAgent"}, want: "必须是字符串数组"},
 		{name: "source kinds reject internal source", params: map[string]any{"sourceKinds": []any{"exec"}}, want: "sourceKinds 不支持"},
 	}
@@ -1982,6 +2150,141 @@ func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
 	}
 	if body["content_base64"] != imagePayload {
 		t.Fatalf("history media 应返回原始 base64")
+	}
+}
+
+func TestAppServerGatewayExternalizesOversizedHistoryOutputsBeforeCap(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 2500
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+	})
+
+	var projectDir string
+	fullOutput := strings.Repeat("single-turn-output-", 500)
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-output-history")
+			return
+		}
+		if frame.Method != "thread/turns/list" {
+			return
+		}
+		response := fmt.Sprintf(
+			`{"id":%s,"result":{"data":[{"id":"turn-output","items":[{"type":"commandExecution","id":"cmd-output","command":"go test ./...","status":"completed","aggregatedOutput":%q}]}]}}`,
+			string(*frame.ID),
+			fullOutput,
+		)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+			t.Errorf("fake upstream 写单 turn 超大输出失败：%v", err)
+		}
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-output-history")
+
+	request := []byte(`{"id":735,"method":"thread/turns/list","params":{"threadId":"thread-output-history","limit":1,"itemsView":"full"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	raw := readGatewayRaw(t, conn)
+	if bytes.Contains(raw, []byte(`"error"`)) {
+		t.Fatalf("单 turn 过程输出应外置而不是触发 history cap：%s", raw)
+	}
+	if len(raw) >= appServerGatewayHistoryResponseCapBytes {
+		t.Fatalf("外置后的 history response 应低于 cap，got=%d raw=%s", len(raw), raw)
+	}
+	if bytes.Contains(raw, []byte(fullOutput)) {
+		t.Fatalf("完整命令输出不应继续内联到 WebSocket：%s", raw)
+	}
+
+	var frame struct {
+		Result struct {
+			Data []struct {
+				Items []struct {
+					AggregatedOutput         string `json:"aggregatedOutput"`
+					HistoryOutputRef         string `json:"historyOutputRef"`
+					HistoryOutputByteCount   int    `json:"historyOutputByteCount"`
+					HistoryOutputContentType string `json:"historyOutputContentType"`
+					HistoryOutputRedacted    bool   `json:"historyOutputRedacted"`
+				} `json:"items"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("外置后 history response 不是合法 JSON：%v raw=%s", err, raw)
+	}
+	item := frame.Result.Data[0].Items[0]
+	if !strings.HasPrefix(item.HistoryOutputRef, appServerHistoryOutputURLPrefix) || !item.HistoryOutputRedacted {
+		t.Fatalf("超大输出应保留可鉴权按需读取的短引用：%+v", item)
+	}
+	if item.HistoryOutputByteCount != len(fullOutput) || item.HistoryOutputContentType != "text/plain; charset=utf-8" {
+		t.Fatalf("超大输出应保留类型与完整字节数：%+v", item)
+	}
+	if item.AggregatedOutput == "" || len(item.AggregatedOutput) >= len(fullOutput) {
+		t.Fatalf("原字段应保留小预览供旧客户端展示：%+v", item)
+	}
+
+	outputID := strings.TrimPrefix(item.HistoryOutputRef, appServerHistoryOutputURLPrefix)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/history-output/"+outputID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history output 应可按需鉴权读取，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	decoded, err := base64.StdEncoding.DecodeString(body["content_base64"].(string))
+	if err != nil || string(decoded) != fullOutput {
+		t.Fatalf("history output 按需读取应返回原始完整内容，err=%v", err)
+	}
+}
+
+func TestAppServerHistoryOutputDehydrationCoversToolAndFileChange(t *testing.T) {
+	router := &Router{historyOutput: newAppServerHistoryOutputStore()}
+	largeToolResult := strings.Repeat("tool-result-", 400)
+	largeDiff := strings.Repeat("+changed line\n", 400)
+	payload := []byte(`{"id":1,"result":{"data":[{"items":[` +
+		`{"type":"mcpToolCall","id":"tool-1","server":"linear","tool":"get_issue","result":` + strconv.Quote(largeToolResult) + `},` +
+		`{"type":"fileChange","id":"file-1","changes":[{"path":"Sources/App.swift","kind":"update","diff":` + strconv.Quote(largeDiff) + `}]}` +
+		`] }]}}`)
+
+	rewritten, changed := router.dehydrateOversizedHistoryOutputs(payload)
+	if !changed {
+		t.Fatal("MCP result 与 file diff 应被外置")
+	}
+	if bytes.Contains(rewritten, []byte(largeToolResult)) || bytes.Contains(rewritten, []byte(largeDiff)) {
+		t.Fatalf("工具结果和 diff 的完整内容不应继续内联：%s", rewritten)
+	}
+	var frame struct {
+		Result struct {
+			Data []struct {
+				Items []map[string]any `json:"items"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &frame); err != nil {
+		t.Fatalf("外置后结构应保持合法 JSON：%v", err)
+	}
+	for _, item := range frame.Result.Data[0].Items {
+		ref, _ := item["historyOutputRef"].(string)
+		if !strings.HasPrefix(ref, appServerHistoryOutputURLPrefix) || item["historyOutputRedacted"] != true {
+			t.Fatalf("每个大过程 item 都应有可恢复引用：%+v", item)
+		}
+	}
+	changes := frame.Result.Data[0].Items[1]["changes"].([]any)
+	change := changes[0].(map[string]any)
+	if change["path"] != "Sources/App.swift" || change["kind"] != "update" || change["diff"] != nil {
+		t.Fatalf("fileChange 预览应保留路径/类型并移除大 diff：%+v", change)
 	}
 }
 

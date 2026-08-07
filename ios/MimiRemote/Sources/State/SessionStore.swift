@@ -25,6 +25,33 @@ struct SessionArchiveMutation: Equatable {
     let target: SessionArchivePreferenceState
 }
 
+/// `applyEventReducerOutput` 内部的会话工作副本。
+///
+/// 一个 runtime event 可能同时更新 status、active turn、审批卡和列表预览。
+/// 这些更新必须按既有分组顺序彼此可见，但不能让每一步都触发整套索引/排序。
+/// 这里只复制会话数组；lookup 仍由 Store 增量维护，避免 batch 与 Store 同时持有
+/// Dictionary 导致每个 staged mutation 都触发整表 CoW。
+final class EventReducerSessionMutationBatch {
+    var sessions: [AgentSession]
+
+    init(sessions: [AgentSession]) {
+        self.sessions = sessions
+    }
+
+    func replace(at index: Int, with session: AgentSession) -> Bool {
+        guard sessions.indices.contains(index), sessions[index] != session else {
+            return false
+        }
+        sessions[index] = session
+        return true
+    }
+
+    func insert(_ session: AgentSession) {
+        // 与 SessionStore.upsert 保持一致：新会话放在数组头部。
+        sessions.insert(session, at: 0)
+    }
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published var projects: [AgentProject] = [] {
@@ -111,9 +138,12 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
+    /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?
-    @Published var isRefreshingAccountTokenUsage = false
-    @Published var isAccountTokenUsageUnavailable = false
+    @Published var accountTokenActivity: AccountTokenActivityState = .idle
+    /// 只表示活动请求本身在飞。不能把配额刷新并进来，否则配额一刷新就会把
+    /// 活动的失败态和空态一起伪装成“正在加载”。
+    @Published var isRefreshingAccountTokenActivity = false
     // 使用量刷新跨设置页、个人页和侧栏共享，由 Store 按 runtime 去重。
     // 视图只观察自己的 provider，避免 Claude loading 禁用其他按钮，也避免
     // 页面关闭后由未结构化 Task 回写已销毁的局部 @State。
@@ -352,6 +382,14 @@ final class SessionStore: ObservableObject {
     var sidebarProjectsByID: [String: AgentProject] = [:]
     var sessionsByID: [SessionID: AgentSession] = [:]
     var sessionIndexByID: [SessionID: Int] = [:]
+    // 只在 applyEventReducerOutput 的同步作用域存在；不能跨 event 或 await。
+    // lookup 在每个 staged mutation 后同步，保证 storage-protection helper 读取到最新状态。
+    var eventReducerSessionMutationBatch: EventReducerSessionMutationBatch?
+    // @Published 在实际写入 sessions 前同步通知。通知回调若重入 reducer，不能直接从旧
+    // canonical sessions 开新批次，否则外层赋值会覆盖内层结果；先排队，待提交完成后顺序处理。
+    var isPublishingEventReducerSessions = false
+    var deferredEventReducerOutputs: [EventReducerOutput] = []
+    var isDrainingDeferredEventReducerOutputs = false
     var sortedAllSessions: [AgentSession] = []
     var sortedSessionsByProjectID: [String: [AgentSession]] = [:]
     var previewSessionsByProjectID: [String: [AgentSession]] = [:]
@@ -414,6 +452,9 @@ final class SessionStore: ObservableObject {
     var gitRefreshDelayNanoseconds: UInt64 = 600_000_000
     let economyHistoryPageLimit = 60
     let fullHistoryPageLimit = 20
+    // full 首屏被 gateway cap 阻断且已知量级时，从首屏 turn 数向下逐级缩页重试完整历史，
+    // 再回退缩略。顶端 10 必须与 CodexAppServerSessionRuntime.fullHistoryTurnPageLadderTop 一致。
+    let fullHistoryTurnPageLadder = [10, 5, 2, 1]
     let historyFirstPageCacheTTL: TimeInterval = 4
     let historyPolicyRetryFallbackNanoseconds: UInt64 = 15_000_000_000
     let historyPolicyRetryMaxNanoseconds: UInt64 = 20_000_000_000

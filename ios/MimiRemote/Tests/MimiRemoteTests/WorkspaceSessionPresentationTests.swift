@@ -3,10 +3,21 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
-    func testWorkspacePresentationRequiresAuthoritativeConsistencyBeforeRevealingCachedRows() {
-        XCTAssertFalse(WorkspaceSessionPresentation.hasCompleteFirstPage(consistency: nil))
-        XCTAssertFalse(WorkspaceSessionPresentation.hasCompleteFirstPage(consistency: .fastIndexed))
-        XCTAssertTrue(WorkspaceSessionPresentation.hasCompleteFirstPage(consistency: .authoritative))
+    func testWorkspaceNeighborPrefetchWaitsForEachRuntimeSpecificFirstPage() {
+        XCTAssertTrue(
+            WorkspaceSessionPresentation.needsFirstPagePrefetch(cachedPageState: nil),
+            "当前 Runtime 没有页状态时必须预取，不能被工作区全局加载状态跳过"
+        )
+
+        var loadedPage = WorkspaceRuntimeSessionPageState()
+        loadedPage.replace(
+            with: SessionsPage(sessions: [], nextCursor: nil, hasMore: false),
+            canonicalSessionIDsBeforeLoad: []
+        )
+        XCTAssertFalse(
+            WorkspaceSessionPresentation.needsFirstPagePrefetch(cachedPageState: loadedPage),
+            "同一个 Runtime 已完成首屏后不应重复预取"
+        )
     }
 
     func testAuthoritativeFirstPageStartsSmallThenAdaptiveFillShrinksToFloor() async throws {
@@ -49,7 +60,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -105,7 +116,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -174,7 +185,7 @@ extension ConversationDataFlowTests {
             )
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }

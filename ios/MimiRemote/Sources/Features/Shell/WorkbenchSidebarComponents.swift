@@ -385,12 +385,13 @@ struct WorkbenchSidebarFooter: View {
         let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
 
         Group {
-            if usesFloatingSurface, !reduceTransparency {
+            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 // 两个按钮由系统统一合成，但间距足够大，不会在静止状态下粘连成一整块玻璃。
                 GlassEffectContainer(spacing: 16) {
                     footerButtonRow
                 }
             } else {
+                // iOS 18–25 直接使用同一行普通按钮，不额外模拟玻璃合成。
                 footerButtonRow
             }
         }
@@ -419,7 +420,7 @@ struct WorkbenchSidebarFooter: View {
     @ViewBuilder
     private var meButton: some View {
         Group {
-            if usesFloatingSurface, !reduceTransparency {
+            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 Button(action: onOpenSettings) {
                     compactMeButtonLabel
                 }
@@ -435,10 +436,16 @@ struct WorkbenchSidebarFooter: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
-                .background(
-                    isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72),
-                    in: Capsule()
-                )
+                .background {
+                    if usesFloatingSurface, !reduceTransparency {
+                        // 旧系统的浮动侧栏使用普通材质，保留层级但不仿制 Liquid Glass。
+                        Capsule().fill(.regularMaterial)
+                    } else {
+                        Capsule().fill(
+                            isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72)
+                        )
+                    }
+                }
                 .overlay {
                     Capsule()
                         .stroke(tokens.border.opacity(0.6), lineWidth: 1)
@@ -490,7 +497,7 @@ struct WorkbenchSidebarFooter: View {
     @ViewBuilder
     private var newSessionButtonContent: some View {
         Group {
-            if usesFloatingSurface, !reduceTransparency {
+            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 Button(action: onNewSession) {
                     WorkbenchChromeIcon(systemName: "plus")
                 }
@@ -506,6 +513,7 @@ struct WorkbenchSidebarFooter: View {
                 .tint(tokens.primaryAction)
                 .foregroundStyle(tokens.primaryActionForeground)
             } else {
+                // iOS 18–25 与 Reduce Transparency 共用清晰的实色主操作按钮。
                 Button(action: onNewSession) {
                     WorkbenchChromeIcon(systemName: "plus")
                         .frame(width: 36, height: 36)
@@ -525,3 +533,224 @@ struct WorkbenchSidebarFooter: View {
         .accessibilityIdentifier("sidebar.newSession")
     }
 }
+
+/// 侧边栏是任务监视器，不重复主列表的路径和完整状态；形状先表达优先级，
+/// 文字只补充“为什么需要回来”与紧凑时间，灰阶和窄栏下仍可扫读。
+struct SessionSidebarMonitorRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let session: AgentSession
+    let kind: SessionSidebarSectionKind
+    let isSelected: Bool
+    let isRecentlyCompleted: Bool
+    let projectIcon: WorkspaceProjectIconContent?
+    let runtimeActivitySnapshot: RuntimeActivitySnapshot?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 6) {
+            if kind == .needYou || kind == .running {
+                // 等待与运行是需要立即扫到的进行态，继续占据 leading 状态槽。
+                stateMarker(tokens: tokens)
+                    .frame(width: 12, height: 12)
+            }
+
+            if let projectIcon {
+                WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+            }
+
+            Text(SessionListPresentation.titleDisplayText(for: session))
+                .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+
+            Spacer(minLength: 4)
+            detail(tokens: tokens)
+
+            if kind == .justCompleted {
+                // 完成未读属于“待查看结果”，跟随相对时间放在整行 trailing，
+                // 不再与需要处理 / 正在运行的 leading 状态混在一起。
+                SessionUnreadIndicator()
+                    .frame(width: 12, height: 12)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(rowFill(tokens: tokens))
+        }
+        .overlay(alignment: .leading) {
+            if isSelected {
+                Capsule()
+                    .fill(tokens.primaryAction)
+                    .frame(width: 3)
+                    .padding(.vertical, 7)
+                    .padding(.leading, 1)
+            }
+        }
+        .animation(
+            MimiMotion.stateTransition.animation(reduceMotion: reduceMotion),
+            value: isRecentlyCompleted
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func stateMarker(tokens: ThemeTokens) -> some View {
+        switch kind {
+        case .needYou:
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(tokens.warning.opacity(0.20))
+                .overlay {
+                    Image(systemName: "exclamationmark")
+                        .font(themeStore.uiFont(size: 7, weight: .bold))
+                        .foregroundStyle(tokens.warning)
+                }
+                .accessibilityLabel(L10n.text("ui.needs_you"))
+        case .running:
+            // 运行态直接使用系统不定进度菊花：由系统负责持续动画、Reduce Motion
+            // 与前后台恢复，避免自绘缺口圆环停留在静态帧。
+            ProgressView()
+                .controlSize(.mini)
+                .tint(tokens.primaryAction)
+                .accessibilityLabel(L10n.text("ui.in_progress"))
+        case .justCompleted, .pinned, .recent:
+            Color.clear
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private func detail(tokens: ThemeTokens) -> some View {
+        Group {
+            switch kind {
+            case .needYou:
+                Text(
+                    session.pendingApproval != nil
+                        ? L10n.text("ui.pending_approval")
+                        : L10n.text("ui.waiting_for_input")
+                )
+            case .running:
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(runningDuration(at: context.date))
+                }
+            case .justCompleted, .pinned, .recent:
+                if let date = session.recencyAt ?? session.updatedAt ?? session.createdAt {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(compactRelativeDuration(from: date, to: context.date))
+                    }
+                }
+            }
+        }
+        .font(themeStore.uiFont(size: 10.5, weight: .regular))
+        .foregroundStyle(tokens.tertiaryText)
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func rowFill(tokens: ThemeTokens) -> Color {
+        if isRecentlyCompleted {
+            return tokens.success.opacity(colorScheme == .dark ? 0.18 : 0.12)
+        }
+        if isSelected {
+            return tokens.selectionFill
+        }
+        return .clear
+    }
+
+    private func runningDuration(at now: Date) -> String {
+        let start = runtimeActivitySnapshot?.turnStartedAt
+            ?? session.updatedAt
+            ?? session.createdAt
+            ?? now
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        if seconds < 60 { return "<1m" }
+        if seconds < 3_600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3_600)h"
+    }
+
+    private func compactRelativeDuration(from date: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "<1m" }
+        if seconds < 3_600 { return "\(seconds / 60)m" }
+        if seconds < 86_400 { return "\(seconds / 3_600)h" }
+        return "\(seconds / 86_400)d"
+    }
+}
+
+struct CodexUsageRingMetrics {
+    let diameter: CGFloat
+    let lineWidth: CGFloat
+    let ringSpacing: CGFloat
+    let hitSize: CGFloat
+
+    init(isCompact: Bool, usesCondensedVisual: Bool = false) {
+        if usesCondensedVisual {
+            diameter = 30
+            lineWidth = 3
+            ringSpacing = 1.4
+        } else {
+            diameter = isCompact ? 32 : 36
+            lineWidth = isCompact ? 3 : 3.2
+            ringSpacing = isCompact ? 1.5 : 1.8
+        }
+        // 图形在 iPhone 上收紧，但点击区始终保持 44pt，兼顾窄屏排版和触控可用性。
+        hitSize = 44
+    }
+}
+
+#if DEBUG
+#Preview(L10n.text("ui.token_quota")) {
+    let codex = CodexUsageWindowsDisplay.make(
+        rateLimit: RateLimitSummary(
+            limitName: "Codex",
+            secondaryUsedPercent: 44,
+            secondaryWindowDurationMins: 10_080
+        )
+    )
+    let claude = CodexUsageWindowsDisplay.make(
+        rateLimit: RateLimitSummary(
+            limitName: "Claude",
+            primaryUsedPercent: 48,
+            secondaryUsedPercent: 0,
+            primaryWindowDurationMins: 10_080,
+            secondaryWindowDurationMins: 300
+        ),
+        fallbackDisplayName: "Claude"
+    )
+    let pending = CodexUsageWindowsDisplay.make(rateLimit: nil)
+
+    HStack(spacing: 24) {
+        AIUsageRingsControl(
+            codexDisplay: codex,
+            claudeDisplay: claude,
+            includesClaude: true,
+            onRefresh: {}
+        )
+            .environment(\.horizontalSizeClass, .regular)
+        AIUsageRingsControl(
+            codexDisplay: codex,
+            claudeDisplay: claude,
+            includesClaude: true,
+            onRefresh: {}
+        )
+            .environment(\.horizontalSizeClass, .compact)
+        AIUsageRingsControl(
+            codexDisplay: pending,
+            claudeDisplay: pending,
+            includesClaude: true,
+            onRefresh: {}
+        )
+            .environment(\.horizontalSizeClass, .compact)
+    }
+    .environmentObject(ThemeStore())
+    .padding(20)
+}
+#endif

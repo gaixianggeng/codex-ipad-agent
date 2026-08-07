@@ -5,6 +5,29 @@ import SwiftUI
 import UIKit
 @testable import MimiRemote
 
+extension XCTestCase {
+    /// 为普通单元/UI 测试提供与 App 运行态完全隔离的 AppStore。
+    ///
+    /// 生产 AppStore 默认读取 UserDefaults.standard 和系统 Keychain；测试不能依赖
+    /// 这些跨测试、跨工作区的持久状态。每次调用都创建新的 suite 和内存 Keychain，
+    /// 并通过 XCTest teardown 删除 suite，避免测试结束后留下测试专属持久域。
+    @MainActor
+    func makeIsolatedAppStore() -> AppStore {
+        let suiteName = "MimiRemoteTests.AppStore.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("无法创建隔离测试 UserDefaults suite: \(suiteName)")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        return AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+    }
+}
+
 // 直连 app-server、连接档案与通用 fixture 支持。
 // 冷启动重试用的客户端：前 N 次 projects() 抛错模拟隧道未就绪，之后成功返回。
 final class CredentialRejectingBootstrapClient: SessionStoreAPIClient {
@@ -541,23 +564,37 @@ func transportErrorResponse(_ transport: FakeCodexAppServerTransport, id: CodexA
     transport.enqueue(#"{"id":\#(encodedID),"error":{"code":\#(code),"message":\#(encodedMessage)}}"#)
 }
 
-func historyPolicyError(reason: String, retryAfterMs: Int? = nil) -> Error {
+func historyPolicyError(
+    reason: String,
+    retryAfterMs: Int? = nil,
+    responseBytes: Int? = nil,
+    maxResponseBytes: Int? = nil,
+    method: String = "thread/turns/list",
+    itemsView: String? = nil
+) -> Error {
+    let resolvedItemsView = itemsView ?? (reason == "history_response_too_large" ? "full" : "summary")
     var data: [String: CodexAppServerJSONValue] = [
         "reason": .string(reason),
-        "method": .string("thread/turns/list"),
+        "method": .string(method),
         "threadId": .string("codex_history_policy_test"),
-        "itemsView": .string(reason == "history_response_too_large" ? "full" : "summary")
+        "itemsView": .string(resolvedItemsView)
     ]
     if let retryAfterMs {
         data["retryAfterMs"] = .int(Int64(retryAfterMs))
         data["retryAfterSeconds"] = .int(Int64(max(1, (retryAfterMs + 999) / 1_000)))
     }
+    if let responseBytes {
+        data["responseBytes"] = .int(Int64(responseBytes))
+    }
+    if let maxResponseBytes {
+        data["maxResponseBytes"] = .int(Int64(maxResponseBytes))
+    }
     let message: String
     switch reason {
     case "history_response_too_large":
-        message = "thread/turns/list history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取"
+        message = "\(method) history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取"
     default:
-        message = "thread/turns/list 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView"
+        message = "\(method) 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView"
     }
     return CodexAppServerConnectionError.appServer(CodexAppServerError(
         code: -32080,

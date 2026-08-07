@@ -77,12 +77,14 @@ func run(args []string) error {
 		return runPair(args)
 	case "network":
 		return runNetwork(args)
+	case "runtime":
+		return runRuntime(args)
 	case "doctor":
 		return runDoctor(args)
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、runtime、serve、doctor、version", cmd)
 	}
 }
 

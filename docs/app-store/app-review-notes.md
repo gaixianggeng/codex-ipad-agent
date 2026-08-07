@@ -8,8 +8,8 @@ The GitHub link on the Connection screen points to this project's public Release
 
 ## Resolution of the previous China mainland issue
 
-- Public App Store metadata and screenshots contain no ChatGPT or OpenAI names, logos, or claims of affiliation.
-- Runtime choices use their recognizable product icons only to identify the compatible host-side CLI selected by the user. Mimi Remote does not claim affiliation with or endorsement by those providers.
+- Public App Store metadata uses neutral feature descriptions. Current screenshots show recognizable Runtime names and icons only where they appear in the real App UI, so users can identify the compatible host-side CLI they selected.
+- Mimi Remote is an independent third-party client and does not claim affiliation with or endorsement by OpenAI, Anthropic, or other Runtime providers.
 - The iOS app has no ChatGPT/OpenAI sign-in, API-key field, model subscription, hosted model endpoint, or purchase flow.
 - Voice input defaults to Codex transcription, which sends a recording directly to the user's configured host and uses their own host-side Codex session. Users may instead select live on-device transcription; the Mimi Remote developer never receives recordings in either mode.
 - Compatible command-line developer runtimes are installed, configured, and authenticated by the user on the host computer. Mimi Remote does not provide or resell access to those tools.

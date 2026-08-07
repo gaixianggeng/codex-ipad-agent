@@ -3,48 +3,53 @@ import os
 import UserNotifications
 
 extension SessionStore {
-    func refreshAccountTokenUsage() async {
+    func refreshAccountTokenUsage(forceRefresh: Bool = false) async {
         let hostScope = appStore.activeHostScope
         guard accountTokenUsageRefreshHostScope != hostScope else {
             return
         }
 
         accountTokenUsageRefreshHostScope = hostScope
-        isRefreshingAccountTokenUsage = true
+        isRefreshingAccountTokenActivity = true
+        // 只有手上没有可显示的历史时才进首屏加载态；已经有网格就保持原样、只让刷新按钮转，
+        // 避免每次刷新都把网格闪成骨架。
+        if accountTokenActivity.displayBuckets == nil {
+            accountTokenActivity = .loading
+        }
         defer {
             if accountTokenUsageRefreshHostScope == hostScope {
                 accountTokenUsageRefreshHostScope = nil
-                isRefreshingAccountTokenUsage = false
+                isRefreshingAccountTokenActivity = false
             }
         }
 
         guard !Task.isCancelled else { return }
+        let fetch: AccountTokenUsageFetch
         do {
-            let snapshot = try await clientFactory().refreshAccountTokenUsage()
-            guard !Task.isCancelled,
-                  appStore.activeHostScope == hostScope,
-                  accountTokenUsageRefreshHostScope == hostScope
-            else {
-                return
-            }
-            if let snapshot {
-                accountTokenUsage = snapshot
-                // summary 可用不代表日粒度历史可用；nil bucket 必须诚实显示“暂不可用”，
-                // 同时仍保留 lifetimeTokens 供卡片标题展示。
-                isAccountTokenUsageUnavailable = snapshot.dailyUsageBuckets == nil
-            } else if accountTokenUsage == nil {
-                isAccountTokenUsageUnavailable = true
-            }
+            fetch = try await clientFactory().refreshAccountTokenUsage(forceRefresh: forceRefresh)
         } catch is CancellationError {
             return
         } catch {
-            guard appStore.activeHostScope == hostScope,
-                  accountTokenUsageRefreshHostScope == hostScope,
-                  accountTokenUsage == nil
-            else {
-                return
-            }
-            isAccountTokenUsageUnavailable = true
+            fetch = .failed
+        }
+        guard !Task.isCancelled,
+              appStore.activeHostScope == hostScope,
+              accountTokenUsageRefreshHostScope == hostScope
+        else {
+            return
+        }
+
+        switch fetch {
+        case .snapshot(let snapshot):
+            accountTokenUsage = snapshot
+            // summary 可用不代表日粒度历史可用；nil bucket 归一成 unsupported，
+            // 同时仍保留 lifetimeTokens 供卡片展示。
+            accountTokenActivity = .resolved(buckets: snapshot.dailyUsageBuckets, asOf: Date())
+        case .unsupported:
+            accountTokenActivity = .unsupported
+        case .failed:
+            // 保留上一次成功的结果，让展示层能画出旧网格并标注它是旧的。
+            accountTokenActivity = .failed(previous: accountTokenActivity.lastSuccessful)
         }
     }
 }
@@ -195,8 +200,32 @@ struct HistoryFirstPageFetchFailure: LocalizedError {
 
 struct HistoryPolicyFailure: Equatable {
     let reason: String?
+    let method: String?
     let retryAfterNanoseconds: UInt64?
     let retryAfterSeconds: Int?
+    /// gateway 阻断的完整响应体量与 cap（history_response_too_large 时非空），
+    /// 用于向用户展示“完整历史约 9.3 MB，超过 5.0 MB 上限”这类结构化量级。
+    let responseBytes: Int?
+    let maxResponseBytes: Int?
+    let itemsView: String?
+
+    init(
+        reason: String?,
+        method: String? = nil,
+        retryAfterNanoseconds: UInt64?,
+        retryAfterSeconds: Int?,
+        responseBytes: Int? = nil,
+        maxResponseBytes: Int? = nil,
+        itemsView: String? = nil
+    ) {
+        self.reason = reason
+        self.method = method
+        self.retryAfterNanoseconds = retryAfterNanoseconds
+        self.retryAfterSeconds = retryAfterSeconds
+        self.responseBytes = responseBytes
+        self.maxResponseBytes = maxResponseBytes
+        self.itemsView = itemsView
+    }
 }
 
 struct SessionListPolicyFailure: Equatable {
@@ -245,6 +274,9 @@ struct HistoryLoadJob {
     /// 非 nil 表示此 job 属于一次明确的前台/网络恢复代次。
     let recoveryGeneration: UInt64?
     let allowPolicyRetry: Bool
+    /// full 自适应缩页时本次尝试使用的 turn 页大小；nil 表示默认首屏（等价 ladder 顶端）。
+    /// 供 history_response_too_large 回退时决定下一级更小的 full 页。
+    let fullTurnPageLimit: Int?
     let task: Task<HistoryFirstPageResult, Error>
     var requiresForegroundReporting: Bool
     var foregroundSuccessStatusMessage: String?

@@ -40,6 +40,7 @@ type Router struct {
 	upgrader       websocket.Upgrader
 	monitor        *relayMonitor
 	historyMedia   *appServerHistoryMediaStore
+	historyOutput  *appServerHistoryMediaStore
 	fileUploads    *fileUploadStore
 	capabilities   capabilityRegistry
 	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
@@ -77,6 +78,12 @@ type Router struct {
 	claudeRuntimeQuotaMu        sync.RWMutex
 	claudeRuntimeQuota          *runtimeRateLimits
 	claudeRuntimeQuotaCheckedAt time.Time
+	// Token 活动只是低频展示数据。缓存成功响应可以让 iOS 重进「我的」页或重连后
+	// 立即拿到最近快照，避免每次都等待 account/usage/read 的慢查询。
+	accountTokenUsageMu       sync.RWMutex
+	accountTokenUsageResult   json.RawMessage
+	accountTokenUsageCachedAt time.Time
+	accountTokenUsageCacheTTL time.Duration
 
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
@@ -177,6 +184,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		},
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
+		historyOutput:               newAppServerHistoryOutputStore(),
 		fileUploads:                 fileUploads,
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		externalActivity:            externalActivity,
@@ -186,6 +194,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
+		accountTokenUsageCacheTTL:   defaultAccountTokenUsageCacheTTL,
 		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
 	r.refreshClaudeBridgeProbe(false)
@@ -246,6 +255,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/external-activity", authed(http.HandlerFunc(r.externalActivityHandler)))
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
+	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }

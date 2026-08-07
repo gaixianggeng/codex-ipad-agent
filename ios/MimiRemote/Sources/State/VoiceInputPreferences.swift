@@ -16,6 +16,37 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Apple 实时语音 API 只在 iOS 26 及以上可用；通过系统能力判断集中管理提供方列表，
+    /// 避免旧系统在设置页展示一个实际无法启动的 Apple 选项。
+    static var supportsAppleRealtimeTranscription: Bool {
+        if #available(iOS 26.0, *) {
+            return true
+        }
+        return false
+    }
+
+    /// 返回当前系统可以真正使用的提供方。参数允许纯逻辑测试显式模拟旧系统能力。
+    static func availableProviders(supportsAppleSpeech: Bool? = nil) -> [Self] {
+        let supportsAppleSpeech = supportsAppleSpeech ?? Self.supportsAppleRealtimeTranscription
+        return supportsAppleSpeech ? Array(allCases) : [.codex]
+    }
+
+    /// 将存储值解析为当前系统可用的提供方；旧系统读取到历史 apple 偏好时确定性回退 Codex，
+    /// 但不改写 UserDefaults，从而保留用户原有偏好，待升级到 iOS 26 后仍可恢复选择。
+    static func resolved(
+        rawValue: String?,
+        supportsAppleSpeech: Bool? = nil
+    ) -> Self {
+        guard let provider = rawValue.flatMap(Self.init(rawValue:)) else {
+            return .codex
+        }
+        let supportsAppleSpeech = supportsAppleSpeech ?? Self.supportsAppleRealtimeTranscription
+        guard provider != .apple || supportsAppleSpeech else {
+            return .codex
+        }
+        return provider
+    }
+
     var title: String {
         switch self {
         case .codex:
@@ -46,11 +77,14 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    static func stored(in defaults: UserDefaults = .standard) -> VoiceInputProvider {
+    static func stored(
+        in defaults: UserDefaults = .standard,
+        supportsAppleSpeech: Bool? = nil
+    ) -> VoiceInputProvider {
         // 新安装默认复用主机已有的 Codex 登录态；用户主动选择设备端后仍保留该偏好。
-        guard let rawValue = defaults.string(forKey: storageKey) else {
-            return .codex
-        }
-        return VoiceInputProvider(rawValue: rawValue) ?? .codex
+        resolved(
+            rawValue: defaults.string(forKey: storageKey),
+            supportsAppleSpeech: supportsAppleSpeech
+        )
     }
 }

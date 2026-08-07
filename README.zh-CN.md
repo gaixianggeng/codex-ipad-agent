@@ -24,18 +24,18 @@
 </p>
 
 <p align="center">
-  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple" alt="要求 iOS 或 iPadOS 26 及以上版本" /></a>
+  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-18%2B-black?logo=apple" alt="要求 iOS 或 iPadOS 18 及以上版本" /></a>
   <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="原生 SwiftUI App" /></a>
   <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI 状态" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 与商店分发例外" /></a>
 </p>
 
 <p align="center">
-  <img src="artifacts/app-screenshots/ipad-pro-devicehub-2026-07-27-workbench.png" alt="Mimi Remote 在实体 iPad Pro 上展示宽屏 Codex 工作台" width="100%" />
+  <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/workspace.png" alt="Mimi Remote 在 iPad 上的工作区" width="100%" />
 </p>
 
 <p align="center">
-  <sub>实体 iPad Pro、当前 Debug 构建、公开演示数据；不是重绘的概念图。</sub>
+  <sub>当前 Mimi Remote iPad 界面，基于实体设备截图与公开演示数据制作。</sub>
 </p>
 
 Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 Mac。项目不运营中转服务、云账号或会话托管服务，Mac 始终是控制平面；用户主动发送给 Codex、Claude Code、GitHub、语音转写或 MCP 的数据，仍会按对应第三方服务的处理方式与条款处理。
@@ -57,15 +57,15 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/iphone-devicehub-2026-07-27-conversation.png" alt="实体 iPhone 17 Pro 上的 Mimi Remote 会话" width="58%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/iphone/zh-Hans/conversation.png" alt="Mimi Remote 在 iPhone 上的会话" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-mini-devicehub-2026-07-27-queue.png" alt="实体 iPad mini 上的 Mimi Remote 待发送队列" width="72%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/sessions.png" alt="Mimi Remote 在 iPad 上的会话列表" width="72%" />
     </td>
   </tr>
 </table>
 
-三张图来自同一份当前源码，通过 Xcode Device Hub 在实体设备上采集。Debug 专用种子数据只使用 `/Users/demo`、占位凭证和公开演示文案，没有展示个人仓库、访问 Token、Endpoint 或 Tailnet 地址。完整说明见 [截图清单](artifacts/app-screenshots/manifest.md)。
+当前截图集覆盖工作区、会话、会话列表、含 Token 使用量的设置页和 Mac 连接页，提供 iPhone / iPad 与简体中文 / 英文两套版本。素材只使用 `/Users/demo`、占位凭证和公开演示文案，没有展示个人仓库、访问 Token、Endpoint 或 Tailnet 地址。完整说明见 [MIM-80 提交清单](artifacts/app-store/mim-80-submission/1.1/README.md)。
 
 ## 离开工位，不离开任务
 
@@ -96,20 +96,20 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>项目是一级对象</strong><br />
-      <sub>项目状态、快捷启动和最近会话组成一个连续工作区。</sub>
+      <strong>用量状态集中可见</strong><br />
+      <sub>Token 使用量、语言、外观与权限集中在清晰的设置界面中。</sub>
     </td>
     <td width="50%" align="center">
-      <strong>打开设置也不丢上下文</strong><br />
-      <sub>额度、连接、语言、外观和权限叠加在当前工作台上。</sub>
+      <strong>Mac 连接状态明确</strong><br />
+      <sub>开始远程工作前即可确认配对信息与宿主连接状态。</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-workspace.png" alt="iPad Pro 模拟器上的 Mimi Remote 项目工作区" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/settings.png" alt="Mimi Remote 在 iPad 上的设置与 Token 使用量" width="100%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-settings.png" alt="叠加在 iPad 当前工作台上的 Mimi Remote 设置面板" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/mac-connection.png" alt="Mimi Remote 在 iPad 上的 Mac 连接设置" width="100%" />
     </td>
   </tr>
 </table>
@@ -129,7 +129,7 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 - **先看状态，再做动作：**连接健康度、Runtime 就绪状态、剩余额度和权限模式会先于可能改变或中断任务的控制项出现。
 - **遵循各平台习惯：**iPhone 是紧凑触屏层级，iPad 是多栏工作台，Mac 是高密度菜单栏工具，而不是把一套布局拉伸到三块屏幕。
 
-两张 iPad 细节图来自当前 Debug 构建和复用的 iPad Pro 模拟器；Mac 图来自同一份源码的 Debug 专用种子界面，并使用公开演示域名 `mimi-demo.local`。采集过程没有重启或替换已安装的 Mac 服务。完整记录见 [截图清单](artifacts/app-screenshots/manifest.md)。
+两张 iPad 细节图来自当前 MIM-80 实体设备截图集；Mac 菜单图来自同一份源码的 Debug 专用种子界面，并使用公开演示域名 `mimi-demo.local`。采集过程没有重启或替换已安装的 Mac 服务。完整记录见 [MIM-80 提交清单](artifacts/app-store/mim-80-submission/1.1/README.md)。
 
 ## 架构
 
@@ -194,7 +194,7 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 
 安装前先确认：
 
-- **必需：**一台运行 iOS / iPadOS 26 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的受支持电脑，以及已在宿主电脑安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。
+- **必需：**一台运行 iOS / iPadOS 18 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的受支持电脑，以及已在宿主电脑安装并可用的 Codex CLI。Runtime 自身的认证只需在宿主完成；Mimi Remote 只连接 `agentd` 网关，不接收或管理 Runtime 凭证与计费。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。iOS 26+ 保留完整的 Liquid Glass 与 Apple 设备端实时语音体验；iOS 18–25 使用更普通的系统材质，并回退到 Codex 录音转写。
 - **网络：**设备位于同一可信局域网时可以直连，不要求安装 Tailscale；跨网络时使用同一 Tailnet，或使用用户自行管理的安全 HTTPS 入口。不要把 `agentd` 的明文 HTTP 端口直接暴露到公网。
 - **可选 Runtime：**Claude Code 是默认关闭的实验通道，不能替代 Codex。启用时需按 [Claude Code 官方安装与认证文档](https://docs.anthropic.com/en/docs/claude-code/getting-started)单独安装和认证，Codex CLI 仍然必需。
 - **当前 iOS 安装方式：**尚无公开 App Store 包。可以通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 安装；也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
@@ -287,7 +287,7 @@ https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/insta
 
 ### 安装 iOS App
 
-Mimi Remote 要求 iOS / iPadOS 26 或更高版本。最简单的安装方式是加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)。
+Mimi Remote 要求 iOS / iPadOS 18 或更高版本。最简单的安装方式是加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)。iOS 26+ 提供完整高级视觉与设备端语音体验；较早的受支持系统会对不可用能力进行明确降级。
 
 如需从源码构建，请使用安装了 Xcode 26 或更高版本和 XcodeGen 的 Mac：
 
@@ -299,7 +299,7 @@ xcodegen generate \
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-在 Xcode 中选择 `MimiRemote` scheme、开发者 Team 和目标 iPhone / iPad 后运行。工程要求 iOS / iPadOS 26 或更高版本。
+在 Xcode 中选择 `MimiRemote` scheme、开发者 Team 和目标 iPhone / iPad 后运行。工程支持 iOS / iPadOS 18 或更高版本；仍需使用带 iOS 26 SDK 的现代 Xcode 编译，以便同时保留新系统高级能力。
 
 Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd up` 或 `agentd pair` 显示的二维码。二维码使用 10 分钟有效的签名票据，同一二维码或复制链接可在有效期内重复兑换，且不直接包含长期 Token；扫码不可用时可以展开高级手动连接。
 
@@ -461,9 +461,9 @@ bridges/claude/          Rust Claude Code 协议 bridge
 
 不是。Mimi Remote 是采用 GNU GPLv3 并附 App Store / Google Play 分发例外的第三方开源项目，与 OpenAI、Anthropic 和 Tailscale 均无隶属或背书关系。
 
-### Why does the app require iOS / iPadOS 26? / 为什么要求 iOS 26？
+### How does the app differ before iOS / iPadOS 26? / iOS 26 之前有什么区别？
 
-当前版本优先使用较新的 SwiftUI 能力完成原生多栏工作台、输入与材质效果，以减少兼容分支和小团队维护成本。旧系统兼容会根据真实用户需求再评估。
+Mimi Remote 支持 iOS / iPadOS 18 及以上版本。iOS 26+ 继续使用 Liquid Glass、系统共享玻璃背景和 Apple 设备端实时语音；iOS 18–25 保留核心会话、工作区、附件与连接能力，但使用普通系统材质，并把不支持的 Apple 实时语音入口回退到 Codex 录音转写。兼容层只处理系统能力差异，不复制业务逻辑。
 
 ## 参与项目
 

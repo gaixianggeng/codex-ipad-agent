@@ -254,6 +254,53 @@ func TestIndexedMessagePageMatchesTailPagination(t *testing.T) {
 	assertMessagePageEqual(t, secondIndexed, secondTail)
 }
 
+func TestMessagesPageFromTailMatchesIndexedAcrossLargeLine(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "rollout-large-page-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	lines := []string{
+		`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"before one"}}`,
+		`{"timestamp":"2026-06-01T10:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"before two"}}`,
+		`{"timestamp":"2026-06-01T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"before three"}}`,
+		`{"timestamp":"2026-06-01T10:00:03Z","type":"event_msg","payload":{"type":"agent_message","message":"before four"}}`,
+		`{"timestamp":"2026-06-01T10:00:04Z","type":"event_msg","payload":{"type":"token_count","info":"` + strings.Repeat("x", 256*1024) + `"}}`,
+		`{"timestamp":"2026-06-01T10:00:05Z","type":"event_msg","payload":{"type":"user_message","message":"after one"}}`,
+		`{"timestamp":"2026-06-01T10:00:06Z","type":"event_msg","payload":{"type":"agent_message","message":"after two"}}`,
+	}
+	if _, err := file.WriteString(strings.Join(lines, "\n")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	indexed, err := indexedMessagesFromFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTail, err := messagesPageFromTail(file, info.Size(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstIndexed := pageFromIndexedMessages(indexed, info.Size(), 3)
+	assertMessagePageEqual(t, firstTail, firstIndexed)
+
+	offset, ok := decodeMessageCursor(firstTail.PreviousCursor)
+	if !ok {
+		t.Fatalf("大行后的 previous_cursor 应可解码：%q", firstTail.PreviousCursor)
+	}
+	secondTail, err := messagesPageFromTail(file, offset, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondIndexed := pageFromIndexedMessages(indexed, offset, 3)
+	assertMessagePageEqual(t, secondTail, secondIndexed)
+}
+
 func BenchmarkMessagesPageFromTailLargeRollout(b *testing.B) {
 	file, err := os.CreateTemp(b.TempDir(), "rollout-large-*.jsonl")
 	if err != nil {
@@ -267,6 +314,53 @@ func BenchmarkMessagesPageFromTailLargeRollout(b *testing.B) {
 			_, _ = file.WriteString(strings.Repeat("x", 256*1024))
 			_, _ = file.WriteString(`"}}` + "\n")
 		}
+		role := "user_message"
+		if i%2 == 1 {
+			role = "agent_message"
+		}
+		_, _ = file.WriteString(`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"` + role + `","message":"message ` + strconv.Itoa(i) + `"}}` + "\n")
+	}
+	// Ensure the measured tail window crosses a 256 KiB+ non-message line:
+	// fewer than 120 messages follow this record, so collecting the 120-message
+	// page must read through it instead of stopping in the newest suffix.
+	_, _ = file.WriteString(`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":"`)
+	_, _ = file.WriteString(strings.Repeat("x", 256*1024))
+	_, _ = file.WriteString(`"}}` + "\n")
+	for i := 0; i < 80; i++ {
+		role := "user_message"
+		if i%2 == 1 {
+			role = "agent_message"
+		}
+		_, _ = file.WriteString(`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"` + role + `","message":"tail message ` + strconv.Itoa(i) + `"}}` + "\n")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page, err := messagesPageFromTail(file, info.Size(), 120)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(page.Messages) != 120 {
+			b.Fatalf("期望返回 120 条消息，实际 %d", len(page.Messages))
+		}
+	}
+}
+
+func BenchmarkMessagesPageFromTailSmallRollout(b *testing.B) {
+	file, err := os.CreateTemp(b.TempDir(), "rollout-small-*.jsonl")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer file.Close()
+
+	// The file is larger than the initial chunk, while the newest 120 messages
+	// fit comfortably inside its final 128 KiB and need no adaptive expansion.
+	for i := 0; i < 3000; i++ {
 		role := "user_message"
 		if i%2 == 1 {
 			role = "agent_message"
