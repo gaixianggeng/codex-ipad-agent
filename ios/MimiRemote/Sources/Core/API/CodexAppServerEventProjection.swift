@@ -433,9 +433,7 @@ extension CodexAppServerSessionRuntime {
             return await accountTokenUsageRefreshTask.value
         }
 
-        let task = Task { [self] in
-            await performAccountTokenUsageRefresh(forceRefresh: forceRefresh)
-        }
+        let task = Task { [self] in await performAccountTokenUsageRefresh(forceRefresh: forceRefresh) }
         accountTokenUsageRefreshTask = task
         let fetch = await task.value
         accountTokenUsageRefreshTask = nil
@@ -461,9 +459,8 @@ extension CodexAppServerSessionRuntime {
 
         do {
             let result = try await sendRecoveringFromStaleInitialization(
-                CodexAppServerRequestBuilder(allowlistedProjects: config.projects).accountUsageRead(
-                    forceRefresh: forceRefresh
-                ),
+                CodexAppServerRequestBuilder(allowlistedProjects: config.projects)
+                    .accountUsageRead(forceRefresh: forceRefresh),
                 timeout: min(requestTimeout, 10)
             )
             guard let snapshot = accountTokenUsageSnapshot(fromPayload: result) else {
