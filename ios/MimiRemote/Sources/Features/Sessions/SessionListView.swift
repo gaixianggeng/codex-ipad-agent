@@ -474,6 +474,7 @@ struct SessionListView: View {
         .listRowSpacing(0)
         .scrollContentBackground(.hidden)
         .background(tokens.background.ignoresSafeArea())
+        .workbenchSoftBottomScrollEdge()
         .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
         .focusable()
         .focused($hasListKeyboardFocus)

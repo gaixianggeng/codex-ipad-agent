@@ -560,6 +560,26 @@ extension View {
         toolbarBackground(tokens.background, for: .navigationBar)
             .toolbarColorScheme(colorScheme, for: .navigationBar)
     }
+
+    /// iOS 26 的 Tab Bar 已经是自带玻璃的浮动胶囊，本身就会模糊身后的内容。此时再强制一层
+    /// 可见的 toolbar 背景，等于把旧版整条实心栏重新画回浮动栏后方：顶层列表底部会出现一条
+    /// 横贯全宽的明度断层，详情页隐藏 Tab Bar 后它还会继续留在 Composer 后方。
+    /// 26 起交给系统绘制，页面背景一路连续到安全区底部；
+    /// iOS 18–25 的 Tab Bar 本来就是整条栏，仍用更厚的材质遮住其后的列表文字。
+    @ViewBuilder
+    func compactTabBarChrome(tokens: ThemeTokens, reduceTransparency: Bool) -> some View {
+        if #available(iOS 26.0, *) {
+            self
+        } else {
+            toolbarBackground(
+                reduceTransparency
+                    ? AnyShapeStyle(tokens.elevatedSurface)
+                    : AnyShapeStyle(.ultraThickMaterial),
+                for: .tabBar
+            )
+            .toolbarBackground(.visible, for: .tabBar)
+        }
+    }
 }
 
 extension ConnectionStatus {
@@ -707,6 +727,17 @@ extension View {
         )
         .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
         .contentShape(Circle())
+    }
+
+    /// 底部滚动边缘统一使用柔和渐隐：内容经过浮动 Tab Bar 或 Composer 后方时只有渐变模糊，
+    /// 不会像 `hard` 那样切出一条横贯全宽的边界线。iOS 26 之前没有该效果，保持原样。
+    @ViewBuilder
+    func workbenchSoftBottomScrollEdge() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.soft, for: .bottom)
+        } else {
+            self
+        }
     }
 }
 
