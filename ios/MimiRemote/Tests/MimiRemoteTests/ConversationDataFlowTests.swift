@@ -3118,6 +3118,98 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(restored.serviceTier, "priority")
     }
 
+    func testDefaultModelPreferencesKeepCodexAndClaudeIndependent() throws {
+        let suiteName = "DefaultModelPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let options = CodexAppServerModelOption.builtInFallback
+            + CodexAppServerModelOption.builtInClaudeFallback
+        let luna = try XCTUnwrap(
+            options.first { $0.model == "gpt-5.6-luna" }
+        )
+        let opus = try XCTUnwrap(
+            options.first { $0.model == "opus" }
+        )
+        defaults.set(luna.id, forKey: DefaultModelPreferences.codexModelOptionIDKey)
+        defaults.set(CodexAppServerReasoningEffort.max.rawValue, forKey: DefaultModelPreferences.codexReasoningEffortKey)
+        defaults.set(opus.id, forKey: DefaultModelPreferences.claudeModelOptionIDKey)
+        defaults.set(CodexAppServerReasoningEffort.xhigh.rawValue, forKey: DefaultModelPreferences.claudeReasoningEffortKey)
+
+        let codex = try XCTUnwrap(
+            DefaultModelPreferences.resolvedSelection(
+                for: DefaultModelRuntime.codex.rawValue,
+                allOptions: options,
+                defaults: defaults
+            )
+        )
+        let claude = try XCTUnwrap(
+            DefaultModelPreferences.resolvedSelection(
+                for: DefaultModelRuntime.claude.rawValue,
+                allOptions: options,
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(codex.option.model, "gpt-5.6-luna")
+        XCTAssertEqual(codex.effort, .max)
+        XCTAssertEqual(claude.option.model, "opus")
+        XCTAssertEqual(claude.effort, .xhigh)
+
+        var codexTurnOptions = CodexAppServerTurnOptions.default
+        DefaultModelPreferences.applyDefault(
+            for: DefaultModelRuntime.codex.rawValue,
+            allOptions: options,
+            defaults: defaults,
+            to: &codexTurnOptions
+        )
+        XCTAssertEqual(codexTurnOptions.model, "gpt-5.6-luna")
+        XCTAssertEqual(codexTurnOptions.reasoningEffort, .max)
+        XCTAssertNil(codexTurnOptions.runtimeProvider)
+
+        var claudeTurnOptions = CodexAppServerTurnOptions.default
+        DefaultModelPreferences.applyDefault(
+            for: DefaultModelRuntime.claude.rawValue,
+            allOptions: options,
+            defaults: defaults,
+            to: &claudeTurnOptions
+        )
+        XCTAssertEqual(claudeTurnOptions.model, "opus")
+        XCTAssertEqual(claudeTurnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(claudeTurnOptions.reasoningEffort, .xhigh)
+        XCTAssertEqual(claudeTurnOptions.runtimeProvider, "claude")
+    }
+
+    func testDefaultModelPreferencesFallBackWhenStoredSelectionIsUnavailable() throws {
+        let suiteName = "DefaultModelPreferencesFallbackTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set("removed-model", forKey: DefaultModelPreferences.codexModelOptionIDKey)
+        defaults.set(CodexAppServerReasoningEffort.ultra.rawValue, forKey: DefaultModelPreferences.codexReasoningEffortKey)
+
+        let selection = try XCTUnwrap(
+            DefaultModelPreferences.resolvedSelection(
+                for: DefaultModelRuntime.codex.rawValue,
+                allOptions: [CodexAppServerModelOption.builtInFallback[2]],
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(selection.option.model, "gpt-5.6-luna")
+        XCTAssertEqual(selection.effort, .xhigh)
+
+        var turnOptions = CodexAppServerTurnOptions.default
+        DefaultModelPreferences.applyDefault(
+            for: DefaultModelRuntime.codex.rawValue,
+            allOptions: [CodexAppServerModelOption.builtInFallback[2]],
+            defaults: defaults,
+            to: &turnOptions
+        )
+        XCTAssertEqual(turnOptions.model, "gpt-5.6-luna")
+        XCTAssertEqual(turnOptions.reasoningEffort, .xhigh)
+    }
+
     func testComposerDraftCacheKeepsDraftsScopedToSessionOrNewProject() {
         let sessionScope = ComposerDraftScopeKey.current(selectedSessionID: "thread-a", selectedProjectID: "project-1")
         let newProjectScope = ComposerDraftScopeKey.current(selectedSessionID: nil, selectedProjectID: "project-1")

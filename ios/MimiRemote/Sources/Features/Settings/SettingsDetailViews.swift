@@ -1102,6 +1102,256 @@ struct PreviewBubble: View {
     }
 }
 
+struct DefaultModelSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    @AppStorage(DefaultModelPreferences.codexModelOptionIDKey)
+    private var codexModelOptionID = ""
+    @AppStorage(DefaultModelPreferences.codexReasoningEffortKey)
+    private var codexReasoningEffortRawValue = ""
+    @AppStorage(DefaultModelPreferences.claudeModelOptionIDKey)
+    private var claudeModelOptionID = ""
+    @AppStorage(DefaultModelPreferences.claudeReasoningEffortKey)
+    private var claudeReasoningEffortRawValue = ""
+    @State private var runtime: DefaultModelRuntime = .codex
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                Picker(L10n.text("ui.runtime"), selection: $runtime) {
+                    Text("Codex").tag(DefaultModelRuntime.codex)
+                    Text("Claude Code").tag(DefaultModelRuntime.claude)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.defaultModels.runtime")
+            } footer: {
+                Text(L10n.text("ui.default_model_settings_description"))
+            }
+            .listRowBackground(tokens.elevatedSurface)
+
+            Section {
+                Picker(L10n.text("ui.model"), selection: modelSelectionBinding) {
+                    Text(L10n.text("ui.use_built_in_default"))
+                        .tag("")
+                    ForEach(modelOptions) { option in
+                        Text(option.menuTitle)
+                            .tag(option.id)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                .accessibilityIdentifier("settings.defaultModels.model.\(runtime.rawValue)")
+
+                if availableEfforts.isEmpty {
+                    LabeledContent(L10n.text("ui.reasoning_effort")) {
+                        Text(L10n.text("ui.no_reasoning_effort_available"))
+                            .foregroundStyle(tokens.secondaryText)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .accessibilityIdentifier(
+                        "settings.defaultModels.reasoning.\(runtime.rawValue).unavailable"
+                    )
+                } else {
+                    Picker(L10n.text("ui.reasoning_effort"), selection: reasoningEffortSelectionBinding) {
+                        ForEach(availableEfforts) { effort in
+                            Text(ModelReasoningGridCatalog.effortTitle(effort))
+                                .tag(effort.rawValue)
+                        }
+                    }
+                    .pickerStyle(.navigationLink)
+                    .accessibilityIdentifier(
+                        "settings.defaultModels.reasoning.\(runtime.rawValue)"
+                    )
+                }
+            } header: {
+                Text(runtimeTitle)
+            } footer: {
+                Text(L10n.format("ui.default_model_current_value", selectedModelTitle))
+            }
+            .listRowBackground(tokens.elevatedSurface)
+
+            Section {
+                Button {
+                    resetCurrentRuntimeDefaults()
+                } label: {
+                    Label(
+                        L10n.text("ui.reset_to_built_in_default"),
+                        systemImage: "arrow.counterclockwise"
+                    )
+                }
+                .foregroundStyle(tokens.warning)
+                .accessibilityIdentifier("settings.defaultModels.reset.\(runtime.rawValue)")
+            } footer: {
+                Text(L10n.text("ui.default_model_reset_description"))
+            }
+            .listRowBackground(tokens.elevatedSurface)
+        }
+        .themedSettingsForm(tokens: tokens)
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .navigationTitle(L10n.text("ui.default_model"))
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(tokens.accent)
+        .onAppear {
+            normalizeStoredEffortIfKnown()
+        }
+        .onChange(of: runtime) { _, _ in
+            normalizeStoredEffortIfKnown()
+        }
+        .onChange(of: sessionStore.appServerModelOptions) { _, _ in
+            normalizeStoredEffortIfKnown()
+        }
+        .task {
+            await sessionStore.refreshAppServerModelOptions()
+            normalizeStoredEffortIfKnown()
+        }
+    }
+
+    private var runtimeTitle: String {
+        switch runtime {
+        case .codex:
+            return "Codex"
+        case .claude:
+            return "Claude Code"
+        }
+    }
+
+    private var modelOptions: [CodexAppServerModelOption] {
+        DefaultModelPreferences.options(
+            for: runtime.rawValue,
+            allOptions: sessionStore.appServerModelOptions
+        )
+    }
+
+    private var selectedModelOption: CodexAppServerModelOption? {
+        if !storedModelOptionID.isEmpty,
+           let storedOption = modelOptions.first(where: { $0.id == storedModelOptionID }) {
+            return storedOption
+        }
+        return DefaultModelPreferences.resolvedSelection(
+            for: runtime.rawValue,
+            allOptions: sessionStore.appServerModelOptions
+        )?.option
+    }
+
+    private var selectedModelTitle: String {
+        selectedModelOption?.menuTitle ?? L10n.text("ui.default_model")
+    }
+
+    private var availableEfforts: [CodexAppServerReasoningEffort] {
+        guard let selectedModelOption else {
+            return []
+        }
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: runtime.rawValue,
+            options: modelOptions
+        )
+        return ModelReasoningGridCatalog.visibleEfforts(
+            for: selectedModelOption,
+            layout: layout
+        )
+    }
+
+    private var storedModelOptionID: String {
+        switch runtime {
+        case .codex:
+            return codexModelOptionID
+        case .claude:
+            return claudeModelOptionID
+        }
+    }
+
+    private var storedReasoningEffortRawValue: String {
+        switch runtime {
+        case .codex:
+            return codexReasoningEffortRawValue
+        case .claude:
+            return claudeReasoningEffortRawValue
+        }
+    }
+
+    private func setStoredModelOptionID(_ value: String) {
+        switch runtime {
+        case .codex:
+            codexModelOptionID = value
+        case .claude:
+            claudeModelOptionID = value
+        }
+    }
+
+    private func setStoredReasoningEffortRawValue(_ value: String) {
+        switch runtime {
+        case .codex:
+            codexReasoningEffortRawValue = value
+        case .claude:
+            claudeReasoningEffortRawValue = value
+        }
+    }
+
+    private var modelSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                guard !storedModelOptionID.isEmpty,
+                      modelOptions.contains(where: { $0.id == storedModelOptionID })
+                else {
+                    return ""
+                }
+                return storedModelOptionID
+            },
+            set: { newValue in
+                setStoredModelOptionID(newValue)
+                normalizeStoredEffortIfKnown()
+            }
+        )
+    }
+
+    private var reasoningEffortSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                if let storedEffort = CodexAppServerReasoningEffort(rawValue: storedReasoningEffortRawValue),
+                   availableEfforts.contains(storedEffort) {
+                    return storedEffort.rawValue
+                }
+                let layout = ModelReasoningGridCatalog.layout(
+                    runtimeProvider: runtime.rawValue,
+                    options: modelOptions
+                )
+                return ModelReasoningGridCatalog.preferredDefaultEffort(
+                    runtimeProvider: runtime.rawValue,
+                    option: selectedModelOption,
+                    layout: layout
+                )?.rawValue ?? availableEfforts.first?.rawValue ?? ""
+            },
+            set: { setStoredReasoningEffortRawValue($0) }
+        )
+    }
+
+    private func normalizeStoredEffortIfKnown() {
+        // 模型目录为空时可能暂时只显示内置兜底；保留未知的历史模型与档位，
+        // 等 model/list 返回 canonical id 后再恢复，避免网络短暂失败覆盖用户配置。
+        guard storedModelOptionID.isEmpty
+            || modelOptions.contains(where: { $0.id == storedModelOptionID })
+        else {
+            return
+        }
+        guard let storedEffort = CodexAppServerReasoningEffort(rawValue: storedReasoningEffortRawValue) else {
+            return
+        }
+        if !availableEfforts.contains(storedEffort) {
+            setStoredReasoningEffortRawValue("")
+        }
+    }
+
+    private func resetCurrentRuntimeDefaults() {
+        setStoredModelOptionID("")
+        setStoredReasoningEffortRawValue("")
+    }
+}
+
 extension View {
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
