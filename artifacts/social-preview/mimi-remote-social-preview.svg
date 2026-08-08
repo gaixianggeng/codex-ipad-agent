@@ -54,7 +54,7 @@
     <text x="401" y="477" fill="#e7efff">SwiftUI + Go</text>
   </g>
 
-  <text x="72" y="568" fill="#8195b7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20">github.com/gaixianggeng/codex-ipad-agent</text>
+  <text x="72" y="568" fill="#8195b7" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20">github.com/gaixianggeng/mimi-remote</text>
 
   <g filter="url(#device-shadow)">
     <rect x="642" y="59" width="580" height="443" rx="34" fill="#070b14" stroke="#63708a" stroke-width="2"/>

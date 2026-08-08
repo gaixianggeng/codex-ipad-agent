@@ -19,7 +19,7 @@
 
 前置条件：Windows 10/11 x64，已在当前 Windows 用户下安装并登录 Codex CLI；电脑与移动设备位于同一可信私有网络，并且 Windows 已将默认 Wi-Fi/以太网配置为“专用网络”。正式 Release 的 `Mimi-Remote-Setup-<version>.exe` 已同时内置 Go 后端 `agentd.exe`、Rust 后端 `alleycat-claude-bridge.exe` 和 `mimi-remote-tray.exe`，普通用户不需要安装 Go、Rust、Homebrew，也不应把服务注册为 LocalSystem。Public 网络以及 Windows 安全弹窗自动创建的额外 Public/Any 入站规则都会 fail closed；安装器会清理这些额外规则，不要手工放宽。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载同版本的安装器、`.sha256` 和 `.metadata.json`。在 PowerShell 中先验证摘要与 Authenticode：
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的安装器、`.sha256` 和 `.metadata.json`。在 PowerShell 中先验证摘要与 Authenticode：
 
 ```powershell
 $setup = Get-Item .\Mimi-Remote-Setup-*.exe
@@ -63,7 +63,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 前置条件：macOS 26 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
 
 检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
 
@@ -283,9 +283,9 @@ work_dir="$(mktemp -d)"
 cd "$work_dir"
 
 curl --fail --location --remote-name \
-  "https://github.com/gaixianggeng/codex-ipad-agent/releases/download/${version}/${archive}"
+  "https://github.com/gaixianggeng/mimi-remote/releases/download/${version}/${archive}"
 curl --fail --location --remote-name \
-  "https://github.com/gaixianggeng/codex-ipad-agent/releases/download/${version}/checksums.txt"
+  "https://github.com/gaixianggeng/mimi-remote/releases/download/${version}/checksums.txt"
 
 awk -v archive="$archive" '$2 == archive { print }' checksums.txt | sha256sum -c -
 tar -xzf "$archive"
@@ -361,7 +361,7 @@ rm -rf -- "$HOME/.config/mimi-remote"
 
 ### 维护者发布前本地验收
 
-正式 tag 依赖 GitHub、Homebrew Tap 和 Apple Developer 三组外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/codex-ipad-agent`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
+正式 tag 依赖 GitHub、Homebrew Tap 和 Apple Developer 三组外部资源：canonical 主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。仓库删除与改名是独立于代码合并的短维护窗口人工操作，具体顺序见[中文仓库改名 runbook](operations/github-repository-rename-runbook.zh-CN.md)。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
 
 macOS 产物还必须配置以下 GitHub Actions Secrets：
 
@@ -400,7 +400,7 @@ bash ./scripts/restart-agentd-dev-macos.sh --self-test
 bash ./scripts/verify-release.sh
 ```
 
-该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/codex-ipad-agent`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
+该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
 
 ### GitHub Release 成功、tap 更新失败
 

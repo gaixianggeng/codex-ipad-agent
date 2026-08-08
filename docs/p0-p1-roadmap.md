@@ -49,10 +49,10 @@
 
 ### 正式发布前的外部动作
 
-完整源码与新 Release 已统一到 `gaixianggeng/codex-ipad-agent`；历史发布镜像只保留旧版本，Tap 继续独立维护 Formula。正式打 tag 前，仓库维护者必须逐项验证：
+完整源码与新 Release 的 canonical 仓库是 `gaixianggeng/mimi-remote`。仓库身份的一次性切换必须在短维护窗口按[中文仓库改名 runbook](operations/github-repository-rename-runbook.zh-CN.md)完成，Tap 继续独立维护 Formula。正式打 tag 前，仓库维护者必须逐项验证：
 
-1. `gaixianggeng/codex-ipad-agent` 为 **Public**，承载完整 iOS / Mac / Go 源码、测试、开发文档和新 Release；
-2. `gaixianggeng/mimi-remote` 保持 **Public**，只保留历史 Release 和旧下载链接；
+1. `gaixianggeng/mimi-remote` 为 **Public**，承载完整 iOS / Mac / Go 源码、测试、开发文档和新 Release；
+2. `gaixianggeng/mimi-remote` 的仓库描述、Topics、Actions、Release 与源码树均已切换到唯一主仓库身份；
 3. `gaixianggeng/homebrew-tap` 为 **Public**，保证 Homebrew 用户不需 GitHub 认证；
 4. 主仓库 `TAP_DEPLOY_KEY` 只对应 Tap 的可写 Deploy Key，不复用维护者 PAT；
 5. 主仓库配置 Developer ID PKCS#12 和 App Store Connect Notary API 五项 Secrets；
@@ -83,10 +83,10 @@ bash ./scripts/verify-release.sh
 
 - GitHub Actions 文件只有推送后才能获得托管环境的最终证明；本地 YAML 解析和命令通过不能替代真实 CI。
 - 本地发布只使用 `scripts/verify-release.sh` 下载并校验的 GoReleaser 预编译包；不要用 `go run` 编译 GoReleaser，否则它可能自动切换 Go 工具链，让本地快照与 CI 正式产物不一致。
-- GoReleaser 已显式固定 `release.github=gaixianggeng/codex-ipad-agent`，快照 Formula 必须生成完整源码仓库的下载 URL；产物门禁会拒绝任何历史 `mimi-remote` Release 下载地址。
+- GoReleaser 已显式固定 `release.github=gaixianggeng/mimi-remote`，快照 Formula 必须生成完整源码仓库的下载 URL；产物门禁会拒绝任何非 canonical 仓库的 Release 下载地址。
 - 同 tag 重跑会替换已有同名附件，只能用于“同 tag、同提交”的 Release/tap 部分失败恢复；如果 tag 被移动，必须停止而不是覆盖公开产物。
 - 当前 Homebrew Formula 仍使用 GoReleaser 已弃用的 `brews` 生成器；首个版本先保持已经验证的安装方式，后续再单独迁移 `homebrew_casks` 并验证 `brew services` 替代方案。
-- 新版本只从完整源码仓库发布；历史镜像不再接收源码导出，也不创建新 tag。
+- 新版本只从唯一完整源码仓库发布；迁移完成后不再维护第二份源码或导出镜像，也不创建额外的仓库 tag。
 - Tailscale HTTP 的 ATS 与应用层边界已经收窄，但 App Store 公开发布前仍需要用真机验证 Tailscale IP、后台切换和弱网恢复。
 - 弱网诊断只保留内存中最近 80 条握手失败和连接结束样本，服务重启后清空；APP 的离线恢复已有确定性测试，但仍需真机验收，不替代长期日志或云端监控。
 - Worktree 无人值守自动删除、任意 Shell、MCP/OAuth 配置写入仍属于高风险能力。当前 Worktree 只提供可解释候选和人工确认，不增加后台 ticker；多个 checkout 无法形成文件系统事务，极端外部竞争导致部分完成时必须依赖结构化 `deleted_paths/failed_path` 恢复 UI 状态。

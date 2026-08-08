@@ -1,4 +1,4 @@
-Mimi Remote is a native mobile developer console for a computer you own or are authorized to use.
+Mimi Remote is a native mobile workspace for a computer you own or are authorized to use.
 
 Connect to your development environment, start or resume coding sessions, review changes, and confirm restricted actions while all commands continue to run on the computer you control.
 

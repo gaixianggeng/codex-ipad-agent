@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
+          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/mimi-remote" ]] \
             || { echo "Nightly 只允许在官方仓库运行。" >&2; exit 1; }
           [[ "$GITHUB_REF" == "refs/heads/main" ]] \
             || { echo "Nightly 只允许从 refs/heads/main 运行。" >&2; exit 1; }

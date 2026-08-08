@@ -12,7 +12,7 @@
 
 - iPhone 或 iPad 运行 App 支持的系统版本。
 - Mac 运行 macOS 26 或更高版本，并已安装和登录 Codex CLI。
-- Mac 已从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 安装并启动 **Mimi Remote Mac**。
+- Mac 已从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装并启动 **Mimi Remote Mac**。
 - 移动设备能够通过局域网、Tailscale 私有网络或用户配置的 HTTPS 地址访问 Mac。
 
 普通用户请下载 `Mimi-Remote-Mac.dmg`，打开后将 **Mimi Remote Mac** 拖入“应用程序”，再在 Mac App 内完成首次设置。命令行安装只作为服务器、自动化或故障恢复入口：
@@ -41,7 +41,7 @@ Mac App 首次设置会显示短期配对二维码，然后在移动端 App 的�
 
 联系邮箱：`gaixg94@gmail.com`
 
-也可以在 [公开 Issue](https://github.com/gaixianggeng/codex-ipad-agent/issues) 报告可复现问题。请附 App 版本、后端版本、设备系统版本和脱敏后的复现步骤，但不要提交 Token、真实 Tailnet 地址、私有路径、代码、完整日志或签名文件。安全问题请按公开仓库 [SECURITY.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/SECURITY.md) 私下报告。
+也可以在 [公开 Issue](https://github.com/gaixianggeng/mimi-remote/issues) 报告可复现问题。请附 App 版本、后端版本、设备系统版本和脱敏后的复现步骤，但不要提交 Token、真实 Tailnet 地址、私有路径、代码、完整日志或签名文件。安全问题请按公开仓库 [SECURITY.md](https://github.com/gaixianggeng/mimi-remote/blob/main/SECURITY.md) 私下报告。
 
 ## English
 
@@ -55,7 +55,7 @@ Before using the app, confirm that:
 
 - Your iPhone or iPad runs a supported system version.
 - Your Mac runs macOS 26 or later, with Codex CLI installed and signed in.
-- **Mimi Remote Mac** is installed from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) and running.
+- **Mimi Remote Mac** is installed from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) and running.
 - The mobile device can reach the Mac over a local network, a private Tailscale network, or an HTTPS endpoint you configure.
 
 For normal setup, download `Mimi-Remote-Mac.dmg`, open it, drag **Mimi Remote Mac** to Applications, and finish setup in the Mac app. Use the command-line path only for servers, automation, or recovery:
@@ -84,4 +84,4 @@ To remove local connection data, choose Forget Connection or delete the connecti
 
 Email: `gaixg94@gmail.com`
 
-You may also report reproducible problems in [public Issues](https://github.com/gaixianggeng/codex-ipad-agent/issues). Include app version, backend version, OS version, and redacted reproduction steps. Never include tokens, real Tailnet addresses, private paths, source code, full logs, or signing files. Report security issues privately as described in the public repository's [SECURITY.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/SECURITY.md).
+You may also report reproducible problems in [public Issues](https://github.com/gaixianggeng/mimi-remote/issues). Include app version, backend version, OS version, and redacted reproduction steps. Never include tokens, real Tailnet addresses, private paths, source code, full logs, or signing files. Report security issues privately as described in the public repository's [SECURITY.md](https://github.com/gaixianggeng/mimi-remote/blob/main/SECURITY.md).

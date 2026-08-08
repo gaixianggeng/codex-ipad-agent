@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'gaixianggeng/codex-ipad-agent'
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -94,7 +94,7 @@ jobs:
         run: bash ./scripts/check-release-artifacts.sh
 
   verify-windows:
-    if: github.repository == 'gaixianggeng/codex-ipad-agent'
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -164,7 +164,7 @@ jobs:
     needs:
       - verify
       - verify-windows
-    if: github.repository == 'gaixianggeng/codex-ipad-agent'
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -241,7 +241,7 @@ jobs:
     needs:
       - release
       - verify-windows
-    if: github.repository == 'gaixianggeng/codex-ipad-agent'
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: windows-latest
     timeout-minutes: 10
     permissions:

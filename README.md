@@ -27,7 +27,7 @@
 <p align="center">
   <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-18%2B-black?logo=apple" alt="iOS and iPadOS 18 or later" /></a>
   <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="Native SwiftUI app" /></a>
-  <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI status" /></a>
+  <a href="https://github.com/gaixianggeng/mimi-remote/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/mimi-remote/actions/workflows/go-ci.yml/badge.svg" alt="Go CI status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 with store distribution exception" /></a>
 </p>
 
@@ -190,14 +190,14 @@ Check these before you install:
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
-- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
+- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
 
 ## Install and run
 
 ### First installation in four steps
 
 1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
-2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest), finish first-run setup, and confirm the service is ready.
+2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest), finish first-run setup, and confirm the service is ready.
 3. **Install the iOS app:** join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6). Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
@@ -208,7 +208,7 @@ Requirements:
 - Windows 10/11 x64, with Codex CLI installed and signed in as the same Windows user.
 - The PC and iPhone/iPad on the same private network. Tailscale is recommended across networks.
 
-Download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest). Always verify the SHA-256. When `metadata.json` reports `authenticode-pfx`, require an Authenticode status of `Valid`; when it reports `unsigned-release`, expect `NotSigned` and a possible Microsoft Defender SmartScreen warning:
+Download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest). Always verify the SHA-256. When `metadata.json` reports `authenticode-pfx`, require an Authenticode status of `Valid`; when it reports `unsigned-release`, expect `NotSigned` and a possible Microsoft Defender SmartScreen warning:
 
 ```powershell
 $setup = Get-Item .\Mimi-Remote-Setup-*.exe
@@ -237,7 +237,7 @@ Requirements:
 - A Mac running macOS 26 or later, with Codex CLI installed and signed in.
 - The Mac and iPhone/iPad connected to the same private network. Tailscale is recommended for access across different networks but is optional for same-LAN use.
 
-For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest/download/Mimi-Remote-Mac.dmg) and its SHA-256 file, verify the checksum, open the DMG, drag **Mimi Remote Mac** to Applications, then finish first-run setup from the menu bar. The app includes `agentd` and the compatible Claude bridge; Homebrew, Go, Rust, and Xcode are not required for the Mac host.
+For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg) and its SHA-256 file, verify the checksum, open the DMG, drag **Mimi Remote Mac** to Applications, then finish first-run setup from the menu bar. The app includes `agentd` and the compatible Claude bridge; Homebrew, Go, Rust, and Xcode are not required for the Mac host.
 
 For command-line installation, server use, or recovery:
 
@@ -273,7 +273,7 @@ For Windows, macOS, and Linux upgrade/recovery steps, see [Install, upgrade, and
 To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
 
 ```text
-https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/install-mimi-remote
+https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
 ```
 
 Ask `$skill-installer` to install that GitHub path. Each GitHub Release also includes `install-mimi-remote.zip` and its SHA-256 file for an auditable, versioned copy.
@@ -335,7 +335,7 @@ The Claude runtime is disabled by default. When enabled, `agentd` supervises one
 The Windows installer and Mac DMG already include a compatible bridge next to `agentd`; signed Windows releases and the notarized Mac DMG preserve platform code identity, while an `unsigned-release` Windows package does not. Do not install a second copy with Cargo for those setups. Install the bridge from source only for Homebrew, Linux, or standalone development:
 
 ```bash
-cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
+cargo install --git https://github.com/gaixianggeng/mimi-remote.git \
   --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge
 
 command -v alleycat-claude-bridge
@@ -410,11 +410,11 @@ cmd/agentd/ + internal/  Go safety gateway and Codex / Claude control plane
 bridges/claude/          Rust Claude Code protocol bridge
 ```
 
-This repository is the complete source and release repository. New Mac, Go, Linux, Homebrew, and Skill artifacts are published here. [`gaixianggeng/mimi-remote`](https://github.com/gaixianggeng/mimi-remote) is retained as a read-only archive for historical releases and download compatibility.
+`gaixianggeng/mimi-remote` is the single canonical source and release repository for the iOS app, Mac app, Go backend, Claude bridge, tests, documentation, and release tooling. The one-time transition from the former complete-source repository and the conflicting historical archive is documented in the [Chinese repository-rename runbook](docs/operations/github-repository-rename-runbook.zh-CN.md); historical v0.1.0–v0.2.2 assets are backed up offline instead of maintaining a second live mirror.
 
 ## Contributing
 
-Open a [GitHub issue](https://github.com/gaixianggeng/codex-ipad-agent/issues/new) with a reproducible problem or proposal. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code. Links to Chinese technical docs above are labeled explicitly; English contributions are welcome.
+Open a [GitHub issue](https://github.com/gaixianggeng/mimi-remote/issues/new) with a reproducible problem or proposal. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code. Links to Chinese technical docs above are labeled explicitly; English contributions are welcome.
 
 ## License
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_MAIN_REPOSITORY="gaixianggeng/codex-ipad-agent"
+readonly EXPECTED_MAIN_REPOSITORY="gaixianggeng/mimi-remote"
 readonly EXPECTED_TAP_REPOSITORY="gaixianggeng/homebrew-tap"
 readonly EXPECTED_TAP_SSH_URL="git@github.com:gaixianggeng/homebrew-tap.git"
 
@@ -139,10 +139,10 @@ run_self_test() {
   local private_repository
   local malformed_json
 
-  public_main='{"full_name":"gaixianggeng/codex-ipad-agent","visibility":"public","private":false}'
+  public_main='{"full_name":"gaixianggeng/mimi-remote","visibility":"public","private":false}'
   public_tap='{"full_name":"gaixianggeng/homebrew-tap","visibility":"public","private":false}'
-  private_repository='{"full_name":"gaixianggeng/codex-ipad-agent","visibility":"private","private":true}'
-  malformed_json='{"full_name":"gaixianggeng/codex-ipad-agent","visibility":'
+  private_repository='{"full_name":"gaixianggeng/mimi-remote","visibility":"private","private":true}'
+  malformed_json='{"full_name":"gaixianggeng/mimi-remote","visibility":'
 
   [[ "$(inspect_repository_metadata "$public_main" "$EXPECTED_MAIN_REPOSITORY")" == "ok" ]] || {
     echo "自测失败：PUBLIC 主仓库应通过。" >&2
@@ -172,7 +172,7 @@ run_check() {
   require_command ruby
 
   if [[ "${GITHUB_REPOSITORY:-}" != "$EXPECTED_MAIN_REPOSITORY" ]]; then
-    echo "Release 已停止：发布工作流必须运行在 ${EXPECTED_MAIN_REPOSITORY}，不能从历史发布镜像或其他仓库创建正式 Release。" >&2
+    echo "Release 已停止：发布工作流必须运行在 ${EXPECTED_MAIN_REPOSITORY}，不能从其他仓库创建正式 Release。" >&2
     return 1
   fi
   if [[ -z "${GITHUB_TOKEN:-}" ]]; then

@@ -21,7 +21,7 @@ Mimi Remote 是第三方开源客户端，不是 OpenAI、Anthropic 或 Tailscal
 - 先执行只读检查，再安装或修改；复用已有安装，不重复初始化。
 - 优先使用正式 Release，不把开发分支、未固定 commit、snapshot 或 `devel` 二进制当作稳定版本。
 - macOS 普通用户默认安装 `Mimi-Remote-Mac.dmg`；Homebrew 只用于命令行、服务器、自动化、旧安装维护或故障恢复。
-- 不假设本 Skill 所在目录或调用时的当前目录就是源码仓库。源码和正式产物统一从 `https://github.com/gaixianggeng/codex-ipad-agent` 获取。
+- 不假设本 Skill 所在目录或调用时的当前目录就是源码仓库。源码和正式产物统一从 `https://github.com/gaixianggeng/mimi-remote` 获取。
 - 不覆盖有未提交改动的源码目录，不在现有脏工作树中切换 tag 或执行清理。
 - 不使用 `agentd setup --force`，除非用户明确要求轮换凭据并接受现有配对失效。
 - 不输出、转述、上传或写入任务总结中的长期 Token、Authorization header、连接链接、二维码内容、完整 Endpoint、Tailscale IP 或私有项目路径。
@@ -30,9 +30,9 @@ Mimi Remote 是第三方开源客户端，不是 OpenAI、Anthropic 或 Tailscal
 - 不运行 `tccutil reset`。macOS 文件权限、登录项审批和签名信任必须由用户在系统界面确认。
 - Linux 安装和服务操作使用普通登录用户，不使用 `sudo` 运行安装脚本。
 - 只有用户明确要求 Claude Code 时才启用该 Runtime；Claude 失败不能破坏 Codex 主通道或轮换现有 Token。
-- 升级、回滚或卸载前阅读 [安装、升级与回滚](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md)。
-- Claude 相关操作前阅读 [Claude bridge 架构](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/claude-bridge-architecture.md)。
-- iOS 构建、签名或真机部署前阅读 [iOS 开发说明](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/ios/MimiRemote/README.md)。
+- 升级、回滚或卸载前阅读 [安装、升级与回滚](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/install-upgrade-rollback.md)。
+- Claude 相关操作前阅读 [Claude bridge 架构](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/claude-bridge-architecture.md)。
+- iOS 构建、签名或真机部署前阅读 [iOS 开发说明](https://github.com/gaixianggeng/mimi-remote/blob/main/ios/MimiRemote/README.md)。
 
 ## 确定操作范围
 
@@ -84,7 +84,7 @@ claude --version
 
 ## 安装 Mimi Remote Mac
 
-使用 `gaixianggeng/codex-ipad-agent` 的最新正式 Release；用户指定版本时固定到对应 tag。下载：
+使用 `gaixianggeng/mimi-remote` 的最新正式 Release；用户指定版本时固定到对应 tag。下载：
 
 ```text
 Mimi-Remote-Mac.dmg
@@ -152,7 +152,7 @@ agentd restart --no-pair
 
 ## 安装 Linux 后端
 
-使用 `gaixianggeng/codex-ipad-agent` 的正式 Release，不从开发工作树安装 `devel` 二进制。根据架构选择归档：
+使用 `gaixianggeng/mimi-remote` 的正式 Release，不从开发工作树安装 `devel` 二进制。根据架构选择归档：
 
 ```text
 mimi-remote_VERSION_linux_amd64.tar.gz
@@ -246,7 +246,7 @@ Claude Code 属于实验通道。Mimi Remote Mac 启动时会在本机检测随�
 CLI 外置 bridge 安装命令：
 
 ```bash
-cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
+cargo install --git https://github.com/gaixianggeng/mimi-remote.git \
   --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge
 command -v alleycat-claude-bridge
 ```
@@ -352,12 +352,12 @@ bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback
 
 ## 按需读取的参考资料
 
-- 产品概览和快速开始：[README.zh-CN.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/README.zh-CN.md)
-- Mac 菜单栏 App：[Mimi Remote Mac](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/macos/MimiRemoteMac/README.md)
-- 安装、升级、停止和回滚：[install-upgrade-rollback.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md)
-- Claude Runtime 生命周期和权限：[claude-bridge-architecture.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/claude-bridge-architecture.md)
-- iOS 构建和验收：[iOS 开发说明](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/ios/MimiRemote/README.md)
-- Codex 协议边界：[codex-protocol-support.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/codex-protocol-support.md)
-- Tailscale 运维：[tailscale-peer-relay-ops.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/tailscale-peer-relay-ops.md)
-- 支持和去敏：[support.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md)
-- 安全问题报告：[SECURITY.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/SECURITY.md)
+- 产品概览和快速开始：[README.zh-CN.md](https://github.com/gaixianggeng/mimi-remote/blob/main/README.zh-CN.md)
+- Mac 菜单栏 App：[Mimi Remote Mac](https://github.com/gaixianggeng/mimi-remote/blob/main/macos/MimiRemoteMac/README.md)
+- 安装、升级、停止和回滚：[install-upgrade-rollback.md](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/install-upgrade-rollback.md)
+- Claude Runtime 生命周期和权限：[claude-bridge-architecture.md](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/claude-bridge-architecture.md)
+- iOS 构建和验收：[iOS 开发说明](https://github.com/gaixianggeng/mimi-remote/blob/main/ios/MimiRemote/README.md)
+- Codex 协议边界：[codex-protocol-support.md](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/codex-protocol-support.md)
+- Tailscale 运维：[tailscale-peer-relay-ops.md](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/tailscale-peer-relay-ops.md)
+- 支持和去敏：[support.md](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md)
+- 安全问题报告：[SECURITY.md](https://github.com/gaixianggeng/mimi-remote/blob/main/SECURITY.md)

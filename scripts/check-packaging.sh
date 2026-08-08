@@ -114,6 +114,7 @@ grep -Fq 'run [opt_bin/"agentd", "serve"]' .goreleaser.yml \
   || fail "Homebrew service 没有执行 agentd serve。"
 grep -Fq 'system "#{bin}/agentd", "version"' .goreleaser.yml \
   || fail "Homebrew Formula 缺少安装后 version 测试。"
+# 只发布完整主仓库；历史后端快照导出链路已退役。
 release_target="$(awk '
   $0 == "release:" { in_release = 1; next }
   in_release && /^[^[:space:]#]/ { exit }
@@ -121,8 +122,8 @@ release_target="$(awk '
   in_release && $1 == "name:" { name = $2 }
   END { print owner "/" name }
 ' .goreleaser.yml)"
-[[ "$release_target" == "gaixianggeng/codex-ipad-agent" ]] \
-  || fail "GoReleaser release.github 必须固定为 gaixianggeng/codex-ipad-agent。"
+[[ "$release_target" == "gaixianggeng/mimi-remote" ]] \
+  || fail "GoReleaser release.github 必须固定为 gaixianggeng/mimi-remote。"
 grep -Fqx '  mode: keep-existing' .goreleaser.yml \
   || fail "GoReleaser 必须保留已有 Release 说明，支持同 tag 恢复。"
 grep -Fqx '  replace_existing_artifacts: true' .goreleaser.yml \
@@ -194,15 +195,6 @@ grep -Fq 'WINDOWS_SIGN_PFX' .github/workflows/release.yml \
   || fail "Release workflow 没有接入 Windows Authenticode 凭据。"
 grep -Fq 'Mimi-Remote-Setup-' .github/workflows/release.yml \
   || fail "Release workflow 没有发布 Windows 安装器。"
-
-if [[ -f scripts/export-public-backend.sh ]]; then
-  grep -Fq 'packaging/skill/install-mimi-remote' scripts/export-public-backend.sh \
-    || fail "公开镜像导出脚本没有包含 Codex Skill。"
-  grep -Fq 'scripts/package-skill.sh' scripts/export-public-backend.sh \
-    || fail "公开镜像导出脚本没有包含 Skill 打包入口。"
-  grep -Fxq '/dist-skill/' packaging/public/.gitignore \
-    || fail "公开镜像没有忽略 Skill 构建目录，GoReleaser 正式发布会因工作区不干净而失败。"
-fi
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

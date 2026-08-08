@@ -46,7 +46,7 @@ for locale in ("en-US", "zh-Hans"):
 
 expected_names = {
     "en-US": "Mimi Remote",
-    "zh-Hans": "咪咪 Console",
+    "zh-Hans": "咪咪 Remote",
 }
 for locale, expected_name in expected_names.items():
     actual_name = (root / locale / "name.txt").read_text(encoding="utf-8").strip()
@@ -67,14 +67,9 @@ for document in required_documents:
 
 link_source = Path("ios/MimiRemote/Sources/Core/AppExternalLinks.swift").read_text(encoding="utf-8")
 for relative_path in ("privacy-policy.md", "terms-of-use.md", "support.md"):
-    expected = f"https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/{relative_path}"
+    expected = f"https://github.com/gaixianggeng/mimi-remote/blob/main/docs/{relative_path}"
     if expected not in link_source:
         errors.append(f"AppExternalLinks.swift is missing stable URL: {expected}")
-
-export_script = Path("scripts/export-public-backend.sh").read_text(encoding="utf-8")
-for relative_path in ("docs/privacy-policy.md", "docs/terms-of-use.md", "docs/support.md"):
-    if relative_path not in export_script:
-        errors.append(f"Public export is missing legal/support document: {relative_path}")
 
 review_notes = (root / "app-review-notes.md").read_text(encoding="utf-8")
 for placeholder in (

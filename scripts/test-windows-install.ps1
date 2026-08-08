@@ -47,19 +47,15 @@ if (-not $buildSource.Contains('Mimi-Remote-Setup-$Version-unsigned')) { throw '
 $checkSource = Get-Content -LiteralPath $check -Raw
 if (-not $checkSource.Contains("'unsigned-release'")) { throw 'Installer validation must recognize unsigned release metadata.' }
 $releaseSource = Get-Content -LiteralPath $releaseWorkflow -Raw
-$currentRepositoryGate = "github.repository == 'gaixianggeng/codex-ipad-agent'"
-$historicalRepositoryGate = "github.repository == 'gaixianggeng/mimi-remote'"
+$currentRepositoryGate = "github.repository == 'gaixianggeng/mimi-remote'"
 if (($releaseSource.Split($currentRepositoryGate).Count - 1) -lt 4) { throw 'All release jobs, including Windows verify/publish, must target the source repository.' }
-if ($releaseSource.Contains($historicalRepositoryGate)) { throw 'Release jobs must not target the historical mimi-remote archive repository.' }
 if (-not $releaseSource.Contains('-AllowUnsignedRelease')) { throw 'Release workflow must explicitly opt into unsigned Windows packaging when credentials are absent.' }
 if (-not $releaseSource.Contains('must either both be configured or both be absent')) { throw 'Partial Windows signing credentials must fail the release.' }
 if (-not $releaseSource.Contains('-RequireSignature')) { throw 'Release workflow must still enforce Authenticode when signing credentials exist.' }
-$currentReleaseURL = 'https://github.com/gaixianggeng/codex-ipad-agent/releases/latest'
-$historicalReleaseURL = 'https://github.com/gaixianggeng/mimi-remote/releases/latest'
+$currentReleaseURL = 'https://github.com/gaixianggeng/mimi-remote/releases/latest'
 foreach ($path in $windowsDocs) {
     $docSource = Get-Content -LiteralPath $path -Raw
     if (-not $docSource.Contains($currentReleaseURL)) { throw "Windows download documentation must target the source repository: $path" }
-    if ($docSource.Contains($historicalReleaseURL)) { throw "Windows download documentation must not target the historical archive: $path" }
     if (-not $docSource.Contains('unsigned-release')) { throw "Windows download documentation must explain unsigned release artifacts: $path" }
 }
 # Static-only acceptance: do not invoke Setup.exe or schtasks.exe, so no real user task or firewall rule is created.

@@ -6,7 +6,7 @@
 
 ## 方案
 
-- App 名称：简体中文 `咪咪 Console`；英文 `Mimi Remote`
+- App 名称：简体中文 `咪咪 Remote`；英文 `Mimi Remote`
 - 主类别：`Developer Tools / 开发者工具`
 - 版本：`1.1`
 - 下一个发布构建下限：`100068`；正式归档仍由发布脚本查询 App Store Connect 后选择唯一构建号。
@@ -17,9 +17,9 @@
 公开 URL：
 
 - Marketing URL：首个中国大陆版本留空，避免把 README 中的开发者兼容性说明误当作商店宣传元数据。
-- Privacy Policy URL：<https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/privacy-policy.md>
-- Support URL：<https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md>
-- Terms URL：<https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/terms-of-use.md>
+- Privacy Policy URL：<https://github.com/gaixianggeng/mimi-remote/blob/main/docs/privacy-policy.md>
+- Support URL：<https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md>
+- Terms URL：<https://github.com/gaixianggeng/mimi-remote/blob/main/docs/terms-of-use.md>
 
 ## 实现
 

@@ -1,8 +1,8 @@
-# 咪咪 Console / Mimi Remote 中国大陆提交清单
+# 咪咪 Remote / Mimi Remote 中国大陆提交清单
 
 ## 目标
 
-在不隐藏真实功能、不冒充第三方官方产品的前提下，把咪咪 Console / Mimi Remote 作为“连接用户自有计算机的自托管开发工作台”提交到中国大陆 App Store。
+在不隐藏真实功能、不冒充第三方官方产品的前提下，把咪咪 Remote / Mimi Remote 作为“连接用户自有计算机的自托管开发工作台”提交到中国大陆 App Store。
 
 KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自有开发运行时”这一产品形态存在审核先例；但不同账号主体、二进制、元数据和审核批次不能互相替代，本清单仍以 Mimi Remote 的历史拒绝信息和当前实现为准。
 
@@ -10,7 +10,7 @@ KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自�
 
 ### 1. 产品与品牌
 
-- [x] App 名称使用独立品牌：简体中文 `咪咪 Console`，英文 `Mimi Remote`。
+- [x] App 名称使用独立品牌：简体中文 `咪咪 Remote`，英文 `Mimi Remote`。
 - [x] 副标题不使用 Mac、iPhone、iPad、ChatGPT、OpenAI 或其他第三方产品名。
 - [x] 公开推广文本、描述和关键词不使用 ChatGPT/OpenAI 名称。
 - [x] 当前 1.1 提交按产品真实界面保留运行时识别名称与图标，并在审核备注中明确其仅用于识别用户选择的兼容主机端 CLI，不代表第三方背书。
@@ -25,10 +25,10 @@ KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自�
 
 ### 2. App Store Connect
 
-- [ ] 核对 App Store Connect 名称为简体中文 `咪咪 Console`、英文 `Mimi Remote`，与本地元数据和本地化显示名称一致。
+- [ ] 核对 App Store Connect 名称为简体中文 `咪咪 Remote`、英文 `Mimi Remote`，与本地元数据一致。
 - [ ] 粘贴 `zh-Hans/` 与 `en-US/` 中的新元数据。
-- [ ] 技术支持 URL 更新为 `https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md`。
-- [ ] 隐私政策 URL 更新为 `https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/privacy-policy.md`。
+- [ ] 技术支持 URL 更新为 `https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md`。
+- [ ] 隐私政策 URL 更新为 `https://github.com/gaixianggeng/mimi-remote/blob/main/docs/privacy-policy.md`。
 - [ ] 首个中国大陆版本不填写 Marketing URL。
 - [x] 已向 1.1 上传 MIM-80 的中英文 iPhone 与 13 英寸 iPad 截图，每组依次为工作区、会话、会话列表、设置和 Mac 连接，共 20 张。
 - [x] 选择包含当前品牌与语音实现的有效构建，构建号为 `100074`。

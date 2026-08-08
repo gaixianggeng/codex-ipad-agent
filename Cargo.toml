@@ -10,8 +10,8 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 authors = ["The Alleycat Authors"]
-repository = "https://github.com/gaixianggeng/codex-ipad-agent"
-homepage = "https://github.com/gaixianggeng/codex-ipad-agent"
+repository = "https://github.com/gaixianggeng/mimi-remote"
+homepage = "https://github.com/gaixianggeng/mimi-remote"
 readme = "README.md"
 
 [workspace.dependencies]

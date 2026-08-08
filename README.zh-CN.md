@@ -26,7 +26,7 @@
 <p align="center">
   <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-18%2B-black?logo=apple" alt="要求 iOS 或 iPadOS 18 及以上版本" /></a>
   <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="原生 SwiftUI App" /></a>
-  <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI 状态" /></a>
+  <a href="https://github.com/gaixianggeng/mimi-remote/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/mimi-remote/actions/workflows/go-ci.yml/badge.svg" alt="Go CI 状态" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 与商店分发例外" /></a>
 </p>
 
@@ -198,14 +198,14 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 - **网络：**设备位于同一可信局域网时可以直连，不要求安装 Tailscale；跨网络时使用同一 Tailnet，或使用用户自行管理的安全 HTTPS 入口。不要把 `agentd` 的明文 HTTP 端口直接暴露到公网。
 - **可选 Runtime：**Claude Code 是默认关闭的实验通道，不能替代 Codex。启用时需按 [Claude Code 官方安装与认证文档](https://docs.anthropic.com/en/docs/claude-code/getting-started)单独安装和认证，Codex CLI 仍然必需。
 - **当前 iOS 安装方式：**尚无公开 App Store 包。可以通过 [TestFlight](https://testflight.apple.com/join/jhGPbSk6) 安装；也可以使用 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本和 XcodeGen 从源码构建，详见 [iOS 构建说明](ios/MimiRemote/README.md)。
-- **仅开发者需要：**普通 Windows / macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
+- **仅开发者需要：**普通 Windows / macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
 
 ## 快速开始
 
 ### 首次安装只需四步
 
 1. **准备 Codex：**在宿主电脑安装 Codex CLI，完成 Runtime 自身认证并确认已经就绪；Mimi Remote 不配置 Provider 凭证或计费。
-2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest)安装 Windows 或 macOS 宿主，完成首次设置并确认服务已就绪。
+2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)安装 Windows 或 macOS 宿主，完成首次设置并确认服务已就绪。
 3. **安装 iOS App：**加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
 4. **扫码配对：**打开宿主的配对入口（或运行 `agentd pair --qr-only`），在 Mimi Remote 中扫描短期二维码。
 
@@ -213,7 +213,7 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 
 ### Windows 安装
 
-要求 Windows 10/11 x64，并已在当前 Windows 用户下安装和登录 Codex CLI。普通用户从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`，先在 PowerShell 验证 SHA-256 与 Authenticode：
+要求 Windows 10/11 x64，并已在当前 Windows 用户下安装和登录 Codex CLI。普通用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`，先在 PowerShell 验证 SHA-256 与 Authenticode：
 
 ```powershell
 $setup = Get-Item .\Mimi-Remote-Setup-*.exe
@@ -242,7 +242,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 - 已安装并登录 Codex CLI；
 - Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络。
 
-普通用户从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和对应 SHA-256 文件，校验后打开 DMG，把 **Mimi Remote Mac** 拖到“应用程序”，再从菜单栏完成首次设置。App 已内置 `agentd` 和兼容的 Claude bridge，不要求 Homebrew、Go、Rust 或 Xcode。
+普通用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和对应 SHA-256 文件，校验后打开 DMG，把 **Mimi Remote Mac** 拖到“应用程序”，再从菜单栏完成首次设置。App 已内置 `agentd` 和兼容的 Claude bridge，不要求 Homebrew、Go、Rust 或 Xcode。
 
 已有 Homebrew 服务时，让 Mac App 执行接管；迁移过程会先跑 Doctor，失败时尝试恢复旧服务，并保留现有配置、Token 和配对关系。
 
@@ -280,7 +280,7 @@ Windows、macOS 与 Linux 的完整升级和恢复步骤见 [安装、升级与�
 如果希望由 Codex 按同一套权限最小化、可恢复流程完成安装、升级和诊断，可以让 `$skill-installer` 安装下面的 GitHub Skill 路径：
 
 ```text
-https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/install-mimi-remote
+https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
 ```
 
 每个 GitHub Release 也会附带 `install-mimi-remote.zip` 和对应 SHA-256 文件，便于固定版本下载与审计。
@@ -310,7 +310,7 @@ Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。�
 只有 Homebrew、Linux 或独立开发环境需要从源码安装外置 bridge：
 
 ```bash
-cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
+cargo install --git https://github.com/gaixianggeng/mimi-remote.git \
   --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge
 
 command -v alleycat-claude-bridge
@@ -430,8 +430,8 @@ cargo test --locked -p alleycat-claude-bridge
 
 ## 仓库说明
 
-- 本仓库 `gaixianggeng/codex-ipad-agent`：唯一的完整开源源码与新版本发布仓库，包括 iOS App、Mac App、Go `agentd`、Claude bridge、测试、文档和发布脚本。
-- [gaixianggeng/mimi-remote](https://github.com/gaixianggeng/mimi-remote)：只读历史发布归档，保留旧版本和既有下载地址。
+- `gaixianggeng/mimi-remote` 是唯一的完整开源源码与新版本发布仓库，包括 iOS App、Mac App、Go `agentd`、Claude bridge、测试、文档和发布脚本。
+- 原完整源码仓库与同名历史归档的一次性切换按[仓库改名 runbook](docs/operations/github-repository-rename-runbook.zh-CN.md)执行；历史 `v0.1.0`–`v0.2.2` 产物离线备份，不再维护第二个在线镜像。
 
 源码目录保持语言和职责清晰，同时避免为目录整齐大规模改写稳定构建路径：
 
@@ -441,7 +441,7 @@ cmd/agentd/ + internal/  Go 安全网关与 Codex / Claude 控制面
 bridges/claude/          Rust Claude Code 协议 bridge
 ```
 
-新的 Mac、Go、Linux、Homebrew 和 Skill 产物统一由本仓库 Release 发布。旧仓库不再承载新版本，仅用于历史版本回滚和旧链接兼容。
+新的 Mac、Go、Linux、Homebrew 和 Skill 产物统一由 `gaixianggeng/mimi-remote` Release 发布。
 
 ## 常见问题（FAQ）
 
@@ -467,7 +467,7 @@ Mimi Remote 支持 iOS / iPadOS 18 及以上版本。iOS 26+ 继续使用 Liquid
 
 ## 参与项目
 
-- 遇到 Bug 或有功能建议，请创建 [GitHub Issue](https://github.com/gaixianggeng/codex-ipad-agent/issues/new)。
+- 遇到 Bug 或有功能建议，请创建 [GitHub Issue](https://github.com/gaixianggeng/mimi-remote/issues/new)。
 - 提交代码前请阅读 [贡献指南](CONTRIBUTING.md)，并尽量附上可复现步骤或验证结果。
 - 如果 Mimi Remote 确实解决了你的问题，可以给仓库一个 Star；它会帮助更多正在搜索 Codex iPad client、Codex remote 或 Claude Code iOS client 的开发者找到这个项目。
 

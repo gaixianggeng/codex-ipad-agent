@@ -93,7 +93,7 @@ pretrust = steps(plan).take(trust_index)
 fail_check("Nightly trust gate 前不得读取 Secrets") if pretrust.any? { |item| item.to_s.include?("secrets.") }
 trust_run = steps(plan).fetch(trust_index).fetch("run")
 [
-  'gaixianggeng/codex-ipad-agent', 'refs/heads/main', 'GITHUB_SHA',
+  'gaixianggeng/mimi-remote', 'refs/heads/main', 'GITHUB_SHA',
   'git rev-parse HEAD', '+refs/heads/main:refs/remotes/origin/main',
   'git rev-parse refs/remotes/origin/main', 'head_sha', 'main_sha'
 ].each { |needle| fail_check("Nightly trust gate 缺少 #{needle}") unless trust_run.include?(needle) }
@@ -160,7 +160,7 @@ fail_check("Prepare signing 前必须有 trust gate") unless step_index(app, "Tr
 fail_check("iOS trust gate 不得读取 Secrets") if trust.to_s.include?("secrets.")
 trust_run = trust.fetch("run")
 [
-  'gaixianggeng/codex-ipad-agent', 'refs/heads/main',
+  'gaixianggeng/mimi-remote', 'refs/heads/main',
   'GITHUB_SHA', 'CANDIDATE_SOURCE_REF', '^[0-9a-f]{40}$',
   'git rev-parse HEAD', '+refs/heads/main:refs/remotes/origin/main',
   'head_sha', 'main_sha', '"$GITHUB_SHA" == "$CANDIDATE_SOURCE_REF"'
