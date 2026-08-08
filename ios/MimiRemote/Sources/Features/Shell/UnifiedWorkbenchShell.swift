@@ -260,15 +260,8 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.me)
         }
-        // 原生 Tab 保留系统交互，并用更厚的材质遮住其后的列表文字；关闭透明度时退成等尺寸实色。
-        // 不再叠加全宽渐变：它会在浮动栏外形成水平色带，并在详情页隐藏 Tab Bar 后继续覆盖 Composer。
-        .toolbarBackground(
-            reduceTransparency
-                ? AnyShapeStyle(tokens.elevatedSurface)
-                : AnyShapeStyle(.ultraThickMaterial),
-            for: .tabBar
-        )
-        .toolbarBackground(.visible, for: .tabBar)
+        // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
+        .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
         .environment(\.workbenchHasCompactTabBar, true)
         .themedWorkbenchNavigationChrome(

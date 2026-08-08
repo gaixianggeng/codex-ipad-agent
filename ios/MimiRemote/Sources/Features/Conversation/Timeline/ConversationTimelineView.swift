@@ -121,6 +121,9 @@ struct ConversationTimelineView: View {
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .background(tokens.background)
+                // Composer 是唯一的底部功能材质；时间线只在它后方留一层柔和渐隐，
+                // 不再在输入区外侧切出一整块与页面不同的底色。
+                .workbenchSoftBottomScrollEdge()
                 .simultaneousGesture(TapGesture().onEnded {
                     KeyboardDismissal.dismiss()
                 })
