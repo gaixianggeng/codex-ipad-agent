@@ -5,6 +5,29 @@ import SwiftUI
 import UIKit
 @testable import MimiRemote
 
+extension XCTestCase {
+    /// 为普通单元/UI 测试提供与 App 运行态完全隔离的 AppStore。
+    ///
+    /// 生产 AppStore 默认读取 UserDefaults.standard 和系统 Keychain；测试不能依赖
+    /// 这些跨测试、跨工作区的持久状态。每次调用都创建新的 suite 和内存 Keychain，
+    /// 并通过 XCTest teardown 删除 suite，避免测试结束后留下测试专属持久域。
+    @MainActor
+    func makeIsolatedAppStore() -> AppStore {
+        let suiteName = "MimiRemoteTests.AppStore.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("无法创建隔离测试 UserDefaults suite: \(suiteName)")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        return AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+    }
+}
+
 // 直连 app-server、连接档案与通用 fixture 支持。
 // 冷启动重试用的客户端：前 N 次 projects() 抛错模拟隧道未就绪，之后成功返回。
 final class CredentialRejectingBootstrapClient: SessionStoreAPIClient {

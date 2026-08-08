@@ -13,7 +13,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             activeTurnID: "turn_queue_guide_now"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -73,7 +73,7 @@ extension ConversationDataFlowTests {
             source: "claude",
             activeTurnID: "turn_stale"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
@@ -125,7 +125,7 @@ extension ConversationDataFlowTests {
             source: "claude",
             activeTurnID: "turn_stale"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
@@ -206,7 +206,7 @@ extension ConversationDataFlowTests {
             source: "claude",
             activeTurnID: "turn_old"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []

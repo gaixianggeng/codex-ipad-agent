@@ -1102,6 +1102,257 @@ struct PreviewBubble: View {
     }
 }
 
+struct DefaultModelSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let runtimes = DefaultModelRuntime.allCases
+
+        Form {
+            // 两个 runtime 各自一段，不再用分段控件互相遮挡：
+            // 这一页要回答的是「现在两边分别是什么」，切换器会把一半答案藏起来。
+            ForEach(runtimes) { runtime in
+                DefaultModelRuntimeSection(
+                    runtime: runtime,
+                    allOptions: sessionStore.appServerModelOptions,
+                    tokens: tokens,
+                    footer: runtime == runtimes.last
+                        ? L10n.text("ui.default_model_settings_description")
+                        : nil
+                )
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .navigationTitle(L10n.text("ui.default_model"))
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(tokens.accent)
+        .onAppear {
+            normalizeStoredEfforts()
+        }
+        .onChange(of: sessionStore.appServerModelOptions) { _, _ in
+            normalizeStoredEfforts()
+        }
+        .task {
+            await sessionStore.refreshAppServerModelOptions()
+            normalizeStoredEfforts()
+        }
+    }
+
+    private func normalizeStoredEfforts() {
+        for runtime in DefaultModelRuntime.allCases {
+            normalizeStoredEffort(for: runtime)
+        }
+    }
+
+    private func normalizeStoredEffort(for runtime: DefaultModelRuntime) {
+        // 模型目录为空时可能暂时只显示内置兜底；保留未知的历史模型与档位，
+        // 等 model/list 返回 canonical id 后再恢复，避免网络短暂失败覆盖用户配置。
+        let allOptions = sessionStore.appServerModelOptions
+        let candidates = DefaultModelPreferences.options(
+            for: runtime.rawValue,
+            allOptions: allOptions
+        )
+        let storedID = DefaultModelPreferences.storedModelOptionID(for: runtime.rawValue)
+        guard storedID == nil || candidates.contains(where: { $0.id == storedID }) else {
+            return
+        }
+        guard let storedEffort = DefaultModelPreferences.storedReasoningEffort(for: runtime.rawValue),
+              let option = DefaultModelPreferences.resolvedSelection(
+                  for: runtime.rawValue,
+                  allOptions: allOptions
+              )?.option
+        else {
+            return
+        }
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: runtime.rawValue,
+            options: candidates
+        )
+        let visibleEfforts = ModelReasoningGridCatalog.visibleEfforts(for: option, layout: layout)
+        if !visibleEfforts.contains(storedEffort) {
+            UserDefaults.standard.removeObject(
+                forKey: DefaultModelPreferences.reasoningEffortKey(for: runtime.rawValue)
+            )
+        }
+    }
+}
+
+private struct DefaultModelRuntimeSection: View {
+    let runtime: DefaultModelRuntime
+    let allOptions: [CodexAppServerModelOption]
+    let tokens: ThemeTokens
+    let footer: String?
+
+    @AppStorage private var modelOptionID: String
+    @AppStorage private var reasoningEffortRawValue: String
+
+    init(
+        runtime: DefaultModelRuntime,
+        allOptions: [CodexAppServerModelOption],
+        tokens: ThemeTokens,
+        footer: String?
+    ) {
+        self.runtime = runtime
+        self.allOptions = allOptions
+        self.tokens = tokens
+        self.footer = footer
+        _modelOptionID = AppStorage(
+            wrappedValue: "",
+            DefaultModelPreferences.modelOptionIDKey(for: runtime.rawValue)
+        )
+        _reasoningEffortRawValue = AppStorage(
+            wrappedValue: "",
+            DefaultModelPreferences.reasoningEffortKey(for: runtime.rawValue)
+        )
+    }
+
+    var body: some View {
+        Section {
+            Picker(L10n.text("ui.model"), selection: modelSelectionBinding) {
+                Text(L10n.text("ui.use_built_in_default"))
+                    .tag("")
+                ForEach(modelOptions) { option in
+                    Text(option.menuTitle)
+                        .tag(option.id)
+                }
+            }
+            .pickerStyle(.navigationLink)
+            .accessibilityIdentifier("settings.defaultModels.model.\(runtime.rawValue)")
+
+            if availableEfforts.isEmpty {
+                LabeledContent(L10n.text("ui.reasoning_effort")) {
+                    Text(L10n.text("ui.no_reasoning_effort_available"))
+                        .foregroundStyle(tokens.secondaryText)
+                        .multilineTextAlignment(.trailing)
+                }
+                .accessibilityIdentifier(
+                    "settings.defaultModels.reasoning.\(runtime.rawValue).unavailable"
+                )
+            } else {
+                Picker(L10n.text("ui.reasoning_effort"), selection: reasoningEffortSelectionBinding) {
+                    ForEach(availableEfforts) { effort in
+                        Text(ModelReasoningGridCatalog.effortTitle(effort))
+                            .tag(effort.rawValue)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")
+            }
+
+            // 没改过就没什么可恢复的，常驻一个红字按钮只是噪音。
+            if hasCustomDefault {
+                Button {
+                    modelOptionID = ""
+                    reasoningEffortRawValue = ""
+                } label: {
+                    Label(
+                        L10n.text("ui.reset_to_built_in_default"),
+                        systemImage: "arrow.counterclockwise"
+                    )
+                }
+                .foregroundStyle(tokens.warning)
+                .accessibilityIdentifier("settings.defaultModels.reset.\(runtime.rawValue)")
+            }
+        } header: {
+            Text(runtime.settingsTitle)
+        } footer: {
+            if let footer {
+                Text(footer)
+            }
+        }
+        .listRowBackground(tokens.elevatedSurface)
+    }
+
+    private var hasCustomDefault: Bool {
+        !modelOptionID.isEmpty || !reasoningEffortRawValue.isEmpty
+    }
+
+    private var modelOptions: [CodexAppServerModelOption] {
+        DefaultModelPreferences.options(for: runtime.rawValue, allOptions: allOptions)
+    }
+
+    private var selectedModelOption: CodexAppServerModelOption? {
+        if !modelOptionID.isEmpty,
+           let storedOption = modelOptions.first(where: { $0.id == modelOptionID }) {
+            return storedOption
+        }
+        return DefaultModelPreferences.resolvedSelection(
+            for: runtime.rawValue,
+            allOptions: allOptions
+        )?.option
+    }
+
+    private var availableEfforts: [CodexAppServerReasoningEffort] {
+        guard let selectedModelOption else {
+            return []
+        }
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: runtime.rawValue,
+            options: modelOptions
+        )
+        return ModelReasoningGridCatalog.visibleEfforts(for: selectedModelOption, layout: layout)
+    }
+
+    private var modelSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                guard !modelOptionID.isEmpty,
+                      modelOptions.contains(where: { $0.id == modelOptionID })
+                else {
+                    return ""
+                }
+                return modelOptionID
+            },
+            set: { newValue in
+                modelOptionID = newValue
+                // 换模型后旧档位可能不在新模型的可见档位里，交给页面级归一化清掉。
+                if let storedEffort = CodexAppServerReasoningEffort(rawValue: reasoningEffortRawValue),
+                   !availableEfforts.contains(storedEffort) {
+                    reasoningEffortRawValue = ""
+                }
+            }
+        )
+    }
+
+    private var reasoningEffortSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                if let storedEffort = CodexAppServerReasoningEffort(rawValue: reasoningEffortRawValue),
+                   availableEfforts.contains(storedEffort) {
+                    return storedEffort.rawValue
+                }
+                let layout = ModelReasoningGridCatalog.layout(
+                    runtimeProvider: runtime.rawValue,
+                    options: modelOptions
+                )
+                return ModelReasoningGridCatalog.preferredDefaultEffort(
+                    runtimeProvider: runtime.rawValue,
+                    option: selectedModelOption,
+                    layout: layout
+                )?.rawValue ?? availableEfforts.first?.rawValue ?? ""
+            },
+            set: { reasoningEffortRawValue = $0 }
+        )
+    }
+}
+
+private extension DefaultModelRuntime {
+    var settingsTitle: String {
+        switch self {
+        case .codex:
+            return "Codex"
+        case .claude:
+            return "Claude Code"
+        }
+    }
+}
+
 extension View {
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)

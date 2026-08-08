@@ -103,8 +103,8 @@ extension ComposerView {
         }
         composerState.updateTurnOptions { options in
             if runtimeChanged || unsupportedModel {
-                // 切换 runtime 或目录刷新淘汰旧模型时，使用产品约定默认值：
-                // Codex 为 GPT-5.6 Sol/xhigh，Claude 为 Opus 5/high。
+                // 切换 runtime 或目录刷新淘汰旧模型时，使用设置里的对应默认值；
+                // 没有自定义设置时仍回到 Codex Sol/xhigh、Claude Opus/high。
                 applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
             } else if unsupportedEffort {
                 options.reasoningEffort = normalizedEffort
@@ -119,34 +119,12 @@ extension ComposerView {
         runtimeProvider: String,
         to options: inout CodexAppServerTurnOptions
     ) {
-        guard let option = ModelReasoningGridCatalog.preferredDefaultOption(
-            runtimeProvider: runtimeProvider,
-            options: modelOptionsForMenu
-        ) else {
-            options.runtimeProvider = runtimeProvider == "codex" ? nil : runtimeProvider
-            options.model = nil
-            options.modelProvider = nil
-            options.reasoningEffort = nil
-            options.serviceTier = nil
-            return
-        }
-        let layout = ModelReasoningGridCatalog.layout(
-            runtimeProvider: runtimeProvider,
-            options: modelOptionsForMenu
-        )
-        let effort = ModelReasoningGridCatalog.preferredDefaultEffort(
-            runtimeProvider: runtimeProvider,
-            option: option,
-            layout: layout
-        )
-        ModelReasoningGridCatalog.applySelection(
-            option: option,
-            effort: effort,
-            preservesServerDefault: false,
-            fallbackRuntimeProvider: runtimeProvider == "codex" ? nil : runtimeProvider,
+        // 默认模型统一从本机设置读取；没有保存配置时仍沿用原来的 Sol/xhigh、Opus/high。
+        DefaultModelPreferences.applyDefault(
+            for: runtimeProvider,
+            allOptions: modelOptionsForMenu,
             to: &options
         )
-        options.serviceTier = nil
     }
 
     func supportsReasoningEffort(

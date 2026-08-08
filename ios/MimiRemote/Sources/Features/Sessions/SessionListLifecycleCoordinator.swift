@@ -118,11 +118,19 @@ struct SessionLifecycleFeedbackTracker {
     }
 
     mutating func observe(_ observations: [SessionLifecycleObservation]) -> MimiHapticEvent? {
+        observeTransitions(observations).feedback
+    }
+
+    /// 与 Haptic 共用同一条“确实见过 waiting 后进入终态”的判定链路，
+    /// 侧边栏高亮只消费完成 ID，不另行通过颜色或 `!isRunning` 猜测状态。
+    mutating func observeTransitions(
+        _ observations: [SessionLifecycleObservation]
+    ) -> SessionLifecycleTransitionResult {
         let currentIDs = Set(observations.map(\.id))
         memoryByID = memoryByID.filter { currentIDs.contains($0.key) }
 
-        var completed = false
-        var failed = false
+        var completedIDs: [SessionID] = []
+        var failedIDs: [SessionID] = []
 
         for observation in observations {
             guard var memory = memoryByID[observation.id] else {
@@ -138,12 +146,12 @@ struct SessionLifecycleFeedbackTracker {
                 memory.armedByWaiting = true
             case .completion:
                 if memory.armedByWaiting {
-                    completed = true
+                    completedIDs.append(observation.id)
                     memory.armedByWaiting = false
                 }
             case .failure:
                 if memory.armedByWaiting {
-                    failed = true
+                    failedIDs.append(observation.id)
                     memory.armedByWaiting = false
                 }
             case .neutral:
@@ -153,13 +161,63 @@ struct SessionLifecycleFeedbackTracker {
             memoryByID[observation.id] = memory
         }
 
-        if failed {
-            return .failure
+        let feedback: MimiHapticEvent?
+        if !failedIDs.isEmpty {
+            feedback = .failure
+        } else if !completedIDs.isEmpty {
+            feedback = .completion
+        } else {
+            feedback = nil
         }
-        if completed {
-            return .completion
+        return SessionLifecycleTransitionResult(
+            feedback: feedback,
+            completedSessionIDs: completedIDs,
+            failedSessionIDs: failedIDs
+        )
+    }
+}
+
+struct SessionLifecycleTransitionResult {
+    let feedback: MimiHapticEvent?
+    let completedSessionIDs: [SessionID]
+    let failedSessionIDs: [SessionID]
+}
+
+/// 侧边栏只需要一个短暂完成高亮；跟踪器复用列表已经验证过的生命周期信号，
+/// Profile 切换时重新建基线，避免同 ID 在另一台主机上产生伪高亮。
+@MainActor
+final class SessionSidebarHighlightCoordinator: ObservableObject {
+    @Published private(set) var highlightedSessionID: SessionID?
+
+    private var profileID: String?
+    private var tracker = SessionLifecycleFeedbackTracker()
+    private var highlightRevision: UInt = 0
+
+    func observe(profileID: String, observations: [SessionLifecycleObservation]) {
+        guard self.profileID == profileID else {
+            self.profileID = profileID
+            tracker.reset(with: observations)
+            clearHighlight()
+            return
         }
-        return nil
+
+        let result = tracker.observeTransitions(observations)
+        guard let sessionID = result.completedSessionIDs.last else { return }
+
+        highlightRevision &+= 1
+        let revision = highlightRevision
+        highlightedSessionID = sessionID
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            guard revision == highlightRevision else { return }
+            highlightedSessionID = nil
+        }
+    }
+
+    private func clearHighlight() {
+        highlightRevision &+= 1
+        highlightedSessionID = nil
     }
 }
 

@@ -1,5 +1,104 @@
 import SwiftUI
 
+enum AppDestination: Hashable {
+    case sessions
+    case workspaces
+    case me
+    case session(SessionID)
+    case subagent(parentID: SessionID, childID: SessionID)
+}
+
+/// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
+/// 紧凑导航先同步提交控件直接绑定的视觉状态，再按控件合并外部副作用；这样既不让
+/// Tab/返回手势落后一帧，也能继续丢弃恢复、网络选择等已经过期的写入。
+@MainActor
+final class WorkbenchNavigationBindingScheduler {
+    enum Lane: Hashable {
+        case splitSelection
+        case compactTab
+        case compactSessionsPath
+        case compactWorkspacesPath
+    }
+
+    private var revisions: [Lane: UInt] = [:]
+
+    func schedule(
+        on lane: Lane,
+        action: @escaping @MainActor () -> Void
+    ) {
+        let revision = revisions[lane, default: 0] &+ 1
+        revisions[lane] = revision
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.revisions[lane] == revision else {
+                return
+            }
+            self.revisions[lane] = nil
+            action()
+        }
+    }
+
+    /// Binding setter 里的视觉状态属于系统当前交互事务，必须立即提交；只有可能发布到
+    /// 其他 Store/Binding 的副作用才延后。返回值把本次视觉快照带到延后阶段做过期检查。
+    @discardableResult
+    func commit<Value>(
+        on lane: Lane,
+        visualUpdate: () -> Value,
+        deferredSideEffect: @escaping @MainActor (Value) -> Void
+    ) -> Value {
+        let value = visualUpdate()
+        schedule(on: lane) {
+            deferredSideEffect(value)
+        }
+        return value
+    }
+}
+
+enum CompactWorkbenchTab: Hashable {
+    case sessions
+    case workspaces
+    case me
+
+    var title: String {
+        switch self {
+        case .sessions: return L10n.text("ui.session")
+        case .workspaces: return L10n.text("ui.workspace")
+        case .me: return L10n.text("ui.me")
+        }
+    }
+
+    var systemImage: String {
+        navigationIcon.normalSystemName
+    }
+
+    var navigationIcon: WorkbenchNavigationIcon {
+        switch self {
+        case .sessions: return .sessions
+        case .workspaces: return .workspaces
+        case .me: return .me
+        }
+    }
+}
+
+enum WorkbenchNavigationEffect: Equatable {
+    case returnToSessionList
+    case selectSession(SessionID)
+}
+
+/// 先在副本中计算导航状态和副作用，再一起提交给 SwiftUI。
+struct WorkbenchNavigationCommit {
+    let state: WorkbenchNavigationState
+    let effect: WorkbenchNavigationEffect?
+}
+
+enum WorkbenchNavigationEvent: Equatable {
+    case open(AppDestination, source: WorkbenchRootPage?)
+    case synchronize(WorkbenchRestorationRoute)
+    case selectionCommitted(SessionSelectionCommit)
+    case compactPathChanged(tab: CompactWorkbenchTab, path: [AppDestination])
+    case compactTabChanged(CompactWorkbenchTab)
+    case sessionSelectionFinished(SessionID)
+}
+
 /// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
 /// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
 struct WorkbenchNavigationState: Equatable {
@@ -486,6 +585,7 @@ struct WorkbenchLayout: Equatable {
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
     let usesFloatingSidebarSurface: Bool
+    let prefersSessionTableDensity: Bool
 
     var usesSheetInspectorNavigation: Bool {
         !usesCompactNavigation && !usesAttachedInspector
@@ -528,6 +628,9 @@ struct WorkbenchLayout: Equatable {
         usesFloatingSidebarSurface = isPad
             && horizontalSizeClass == .regular
             && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+        // 会话行只按可用宽度选密度，不按设备类型：iPhone 竖屏与 iPad 竖屏读的是同一批对象，
+        // 没有理由把项目锚点在手机上缩成 12pt。只有 Slide Over 这类真正窄的窗口才回退 compact。
+        prefersSessionTableDensity = containerWidth >= 360
     }
 }
 
@@ -1160,7 +1263,106 @@ enum WorkbenchPageLayout {
     static let maxContentWidth: CGFloat = 820
     static let regularPadding: CGFloat = 24
     static let compactPadding: CGFloat = 20
-    static let compactBottomPadding: CGFloat = 132
+    static let contentPanelPadding: CGFloat = 16
+    static let groupedPanelPadding: CGFloat = 14
+    static let controlPadding: CGFloat = 10
+    static let contentPanelCornerRadius: CGFloat = 22
+    static let groupedPanelCornerRadius: CGFloat = 16
+    static let controlCornerRadius: CGFloat = 12
+
+    // iOS 26 的浮动 Tab Bar 没有公开可读取的实时高度。这里统一维护其视觉高度，
+    // 再叠加设备 safe area 与 20pt 呼吸区，避免三个顶层页面各自猜一套底部留白。
+    static let compactTabBarVisualHeight: CGFloat = 64
+    static let compactTabBarBreathingRoom: CGFloat = 20
+    static let compactTabBarMinimumSafeArea: CGFloat = 20
+    static let defaultCompactBottomSafeAreaInset: CGFloat = 34
+    static var defaultCompactBottomChromeClearance: CGFloat {
+        compactBottomChromeClearance(
+            bottomSafeAreaInset: defaultCompactBottomSafeAreaInset
+        )
+    }
+    // 兼容不在紧凑 Tab 容器中的旧页面；顶层三页会使用实时 safe area 计算值。
+    static var compactBottomPadding: CGFloat {
+        defaultCompactBottomChromeClearance
+    }
+
+    static func compactBottomChromeClearance(bottomSafeAreaInset: CGFloat) -> CGFloat {
+        compactTabBarVisualHeight
+            + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
+            + compactTabBarBreathingRoom
+    }
+}
+
+private struct WorkbenchBottomChromeClearanceKey: EnvironmentKey {
+    static let defaultValue = WorkbenchPageLayout.defaultCompactBottomChromeClearance
+}
+
+private struct WorkbenchHasCompactTabBarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var workbenchBottomChromeClearance: CGFloat {
+        get { self[WorkbenchBottomChromeClearanceKey.self] }
+        set { self[WorkbenchBottomChromeClearanceKey.self] = newValue }
+    }
+
+    var workbenchHasCompactTabBar: Bool {
+        get { self[WorkbenchHasCompactTabBarKey.self] }
+        set { self[WorkbenchHasCompactTabBarKey.self] = newValue }
+    }
+}
+
+enum WorkbenchSurfaceRole {
+    case contentPanel
+    case groupedPanel
+    case control
+
+    var cornerRadius: CGFloat {
+        switch self {
+        case .contentPanel:
+            WorkbenchPageLayout.contentPanelCornerRadius
+        case .groupedPanel:
+            WorkbenchPageLayout.groupedPanelCornerRadius
+        case .control:
+            WorkbenchPageLayout.controlCornerRadius
+        }
+    }
+}
+
+private struct WorkbenchSurfaceModifier: ViewModifier {
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    let tokens: ThemeTokens
+    let role: WorkbenchSurfaceRole
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: role.cornerRadius, style: .continuous)
+
+        content
+            .background(background, in: shape)
+            .overlay {
+                shape.stroke(
+                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
+                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
+                )
+            }
+    }
+
+    private var background: Color {
+        switch role {
+        case .contentPanel, .groupedPanel:
+            tokens.contentPanelBackground
+        case .control:
+            tokens.surface.opacity(0.72)
+        }
+    }
+}
+
+extension View {
+    func workbenchSurface(tokens: ThemeTokens, role: WorkbenchSurfaceRole) -> some View {
+        modifier(WorkbenchSurfaceModifier(tokens: tokens, role: role))
+    }
 }
 
 struct StatusPill: View {

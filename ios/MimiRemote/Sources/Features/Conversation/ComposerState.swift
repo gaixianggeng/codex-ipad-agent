@@ -192,6 +192,158 @@ struct ComposerModelSelectionCache {
     }
 }
 
+enum DefaultModelRuntime: String, CaseIterable, Hashable, Identifiable {
+    case codex
+    case claude
+
+    var id: String { rawValue }
+
+    var payloadRuntimeProvider: String? {
+        self == .codex ? nil : rawValue
+    }
+}
+
+struct DefaultModelSelection: Equatable {
+    let option: CodexAppServerModelOption
+    let effort: CodexAppServerReasoningEffort?
+}
+
+enum DefaultModelPreferences {
+    static let codexModelOptionIDKey = "composer.defaultModel.codex.optionID"
+    static let codexReasoningEffortKey = "composer.defaultModel.codex.reasoningEffort"
+    static let claudeModelOptionIDKey = "composer.defaultModel.claude.optionID"
+    static let claudeReasoningEffortKey = "composer.defaultModel.claude.reasoningEffort"
+
+    /// 默认值是本机偏好，不跟随 Host 或会话保存；只有“没有会话快照”时才会被 Composer 使用。
+    static func options(
+        for runtimeProvider: String,
+        allOptions: [CodexAppServerModelOption]
+    ) -> [CodexAppServerModelOption] {
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        let available = allOptions.filter {
+            !$0.hidden
+                && CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeProvider) == runtime
+        }
+        guard available.isEmpty else {
+            return available
+        }
+        return runtime == "claude"
+            ? CodexAppServerModelOption.builtInClaudeFallback
+            : CodexAppServerModelOption.builtInFallback
+    }
+
+    static func modelOptionIDKey(for runtimeProvider: String) -> String {
+        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude"
+            ? claudeModelOptionIDKey
+            : codexModelOptionIDKey
+    }
+
+    static func reasoningEffortKey(for runtimeProvider: String) -> String {
+        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude"
+            ? claudeReasoningEffortKey
+            : codexReasoningEffortKey
+    }
+
+    static func storedModelOptionID(
+        for runtimeProvider: String,
+        in defaults: UserDefaults = .standard
+    ) -> String? {
+        defaults.string(forKey: modelOptionIDKey(for: runtimeProvider))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty
+    }
+
+    static func storedReasoningEffort(
+        for runtimeProvider: String,
+        in defaults: UserDefaults = .standard
+    ) -> CodexAppServerReasoningEffort? {
+        guard let rawValue = defaults.string(forKey: reasoningEffortKey(for: runtimeProvider)) else {
+            return nil
+        }
+        return CodexAppServerReasoningEffort(rawValue: rawValue)
+    }
+
+    static func resolvedSelection(
+        for runtimeProvider: String,
+        allOptions: [CodexAppServerModelOption],
+        defaults: UserDefaults = .standard
+    ) -> DefaultModelSelection? {
+        let candidates = options(for: runtimeProvider, allOptions: allOptions)
+        let option = storedModelOptionID(for: runtimeProvider, in: defaults)
+            .flatMap { storedID in candidates.first { $0.id == storedID } }
+            ?? ModelReasoningGridCatalog.preferredDefaultOption(
+                runtimeProvider: runtimeProvider,
+                options: candidates
+            )
+        guard let option else {
+            return nil
+        }
+
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: runtimeProvider,
+            options: candidates
+        )
+        let visibleEfforts = ModelReasoningGridCatalog.visibleEfforts(
+            for: option,
+            layout: layout
+        )
+        let storedEffort = storedReasoningEffort(for: runtimeProvider, in: defaults)
+            .flatMap { visibleEfforts.contains($0) ? $0 : nil }
+        let effort = storedEffort
+            ?? ModelReasoningGridCatalog.preferredDefaultEffort(
+                runtimeProvider: runtimeProvider,
+                option: option,
+                layout: layout
+            )
+        return DefaultModelSelection(option: option, effort: effort)
+    }
+
+    /// 将本机默认配置转换成 turn/start 可直接使用的显式模型选择。
+    /// 目录中找不到已保存的模型或推理档位时，先解析到当前 runtime 的安全默认项。
+    static func applyDefault(
+        for runtimeProvider: String,
+        allOptions: [CodexAppServerModelOption],
+        defaults: UserDefaults = .standard,
+        to options: inout CodexAppServerTurnOptions
+    ) {
+        guard let selection = resolvedSelection(
+            for: runtimeProvider,
+            allOptions: allOptions,
+            defaults: defaults
+        ) else {
+            options.runtimeProvider = DefaultModelRuntime(rawValue: runtimeProvider)?.payloadRuntimeProvider
+            options.model = nil
+            options.modelProvider = nil
+            options.reasoningEffort = nil
+            options.serviceTier = nil
+            return
+        }
+
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: runtimeProvider,
+            options: Self.options(for: runtimeProvider, allOptions: allOptions)
+        )
+        let effort = ModelReasoningGridCatalog.normalizedVisibleEffort(
+            option: selection.option,
+            current: selection.effort,
+            layout: layout
+        )
+        ModelReasoningGridCatalog.applySelection(
+            option: selection.option,
+            effort: effort,
+            preservesServerDefault: false,
+            fallbackRuntimeProvider: DefaultModelRuntime(rawValue: runtimeProvider)?.payloadRuntimeProvider,
+            to: &options
+        )
+        options.serviceTier = nil
+    }
+
+    static func reset(for runtimeProvider: String, in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: modelOptionIDKey(for: runtimeProvider))
+        defaults.removeObject(forKey: reasoningEffortKey(for: runtimeProvider))
+    }
+}
+
 enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     case requestApproval
     case readOnly

@@ -589,7 +589,7 @@ final class ConversationDataFlowTests: XCTestCase {
     func testConversationTimelineStartsAtTailAfterSwitchingFromScrolledSession() async throws {
         let firstSessionID = "tail-position-first"
         let secondSessionID = "tail-position-second"
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         for index in 0..<36 {
@@ -658,7 +658,7 @@ final class ConversationDataFlowTests: XCTestCase {
 #endif
         let longSessionID = "tail-race-long"
         let shortSessionID = "tail-race-short"
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         for index in 0..<72 {
@@ -2356,6 +2356,331 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
+    func testEventReducerOutputBatchesSessionFieldsAndPublishesOnce() throws {
+        let store = makeEventReducerTestStore()
+        let sessionID = "session_batch_fields"
+        var session = makeSession(
+            id: sessionID,
+            projectID: "project_batch",
+            title: "批处理会话",
+            status: SessionStatus.waitingForApproval.rawValue,
+            source: "codex",
+            activeTurnID: "turn_batch"
+        )
+        let approval = ApprovalSummary(
+            id: "approval_batch",
+            title: "允许批处理命令",
+            kind: "command",
+            count: 1
+        )
+        let input = AgentUserInputRequest(
+            id: "input_batch",
+            threadID: sessionID,
+            turnID: "turn_batch",
+            itemID: "item_batch",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "question_batch",
+                    header: "范围",
+                    question: "选择范围",
+                    isOther: false,
+                    isSecret: false,
+                    options: []
+                )
+            ]
+        )
+        session.pendingApproval = approval
+        session.pendingUserInput = input
+        store.sessions = [session]
+
+        var output = EventReducerOutput()
+        output.statusUpdates = [(sessionID, SessionStatus.completed.rawValue)]
+        output.activeTurnMutations = [.clear(sessionID, "turn_batch")]
+        output.pendingApprovalUpdates = [(sessionID, nil)]
+        output.pendingUserInputUpdates = [(sessionID, nil)]
+
+        var publishCount = 0
+        let cancellable = store.$sessions.dropFirst().sink { _ in
+            publishCount += 1
+        }
+        store.applyEventReducerOutput(output)
+        withExtendedLifetime(cancellable) {}
+
+        let finalSession = try XCTUnwrap(store.sessionsByID[sessionID])
+        XCTAssertEqual(publishCount, 1)
+        XCTAssertEqual(finalSession.status, SessionStatus.completed.rawValue)
+        XCTAssertNil(finalSession.activeTurnID)
+        XCTAssertNil(finalSession.pendingApproval)
+        XCTAssertNil(finalSession.pendingUserInput)
+        XCTAssertEqual(store.sessions.map(\.id), [sessionID])
+        XCTAssertEqual(store.sessionIndexByID[sessionID], 0)
+    }
+
+    func testEventReducerBatchMakesUpsertVisibleToLaterMutations() throws {
+        let store = makeEventReducerTestStore()
+        let sessionID = "session_batch_upsert"
+        let goal = ThreadGoal(
+            threadID: sessionID,
+            objective: "完成批处理验证",
+            status: .active,
+            tokenBudget: 1_000
+        )
+        let incoming = makeSession(
+            id: sessionID,
+            projectID: "project_batch",
+            title: "新会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex"
+        )
+
+        var output = EventReducerOutput()
+        output.upsertSessions = [incoming]
+        output.statusUpdates = [(sessionID, SessionStatus.running.rawValue)]
+        output.activeTurnMutations = [.set(sessionID, "turn_after_upsert")]
+        output.goalUpdates = [(sessionID, goal)]
+
+        var publishCount = 0
+        let cancellable = store.$sessions.dropFirst().sink { _ in
+            publishCount += 1
+        }
+        store.applyEventReducerOutput(output)
+        withExtendedLifetime(cancellable) {}
+
+        let finalSession = try XCTUnwrap(store.sessionsByID[sessionID])
+        XCTAssertEqual(publishCount, 1)
+        XCTAssertEqual(store.sessions.count, 1)
+        XCTAssertEqual(finalSession.status, SessionStatus.running.rawValue)
+        XCTAssertEqual(finalSession.activeTurnID, "turn_after_upsert")
+        XCTAssertEqual(finalSession.goal, goal)
+        XCTAssertEqual(store.sessionIndexByID[sessionID], 0)
+    }
+
+    func testEventReducerBatchUsesLastMutationForDuplicateFields() throws {
+        let store = makeEventReducerTestStore()
+        let sessionID = "session_batch_last_write"
+        var session = makeSession(
+            id: sessionID,
+            projectID: "project_batch",
+            title: "覆盖顺序",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            activeTurnID: "turn_initial"
+        )
+        let firstApproval = ApprovalSummary(id: "approval_first", title: "第一次", kind: "command", count: 1)
+        let lastApproval = ApprovalSummary(id: "approval_last", title: "最后一次", kind: "command", count: 2)
+        let firstInput = AgentUserInputRequest(
+            id: "input_first",
+            threadID: sessionID,
+            turnID: "turn_initial",
+            itemID: "item_first",
+            questions: []
+        )
+        let lastInput = AgentUserInputRequest(
+            id: "input_last",
+            threadID: sessionID,
+            turnID: "turn_initial",
+            itemID: "item_last",
+            questions: []
+        )
+        session.pendingApproval = firstApproval
+        session.pendingUserInput = firstInput
+        store.sessions = [session]
+
+        var output = EventReducerOutput()
+        output.statusUpdates = [
+            (sessionID, SessionStatus.waitingForApproval.rawValue),
+            (sessionID, SessionStatus.waitingForInput.rawValue)
+        ]
+        output.activeTurnMutations = [
+            .set(sessionID, "turn_first"),
+            .set(sessionID, "turn_last")
+        ]
+        output.pendingApprovalUpdates = [(sessionID, firstApproval), (sessionID, lastApproval)]
+        output.pendingUserInputUpdates = [(sessionID, firstInput), (sessionID, lastInput)]
+
+        var publishCount = 0
+        let cancellable = store.$sessions.dropFirst().sink { _ in
+            publishCount += 1
+        }
+        store.applyEventReducerOutput(output)
+        withExtendedLifetime(cancellable) {}
+
+        let finalSession = try XCTUnwrap(store.sessionsByID[sessionID])
+        XCTAssertEqual(publishCount, 1)
+        XCTAssertEqual(finalSession.status, SessionStatus.waitingForInput.rawValue)
+        XCTAssertEqual(finalSession.activeTurnID, "turn_last")
+        XCTAssertEqual(finalSession.pendingApproval, lastApproval)
+        XCTAssertEqual(finalSession.pendingUserInput, lastInput)
+    }
+
+    func testEventReducerBatchNoOpDoesNotPublish() throws {
+        let store = makeEventReducerTestStore()
+        let sessionID = "session_batch_noop"
+        let session = makeSession(
+            id: sessionID,
+            projectID: "project_batch",
+            title: "无变化",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            activeTurnID: "turn_noop"
+        )
+        store.sessions = [session]
+
+        var output = EventReducerOutput()
+        output.statusUpdates = [(sessionID, SessionStatus.running.rawValue)]
+        output.activeTurnMutations = [
+            .clear(sessionID, "turn_noop"),
+            .set(sessionID, "turn_noop")
+        ]
+
+        var publishCount = 0
+        let cancellable = store.$sessions.dropFirst().sink { _ in
+            publishCount += 1
+        }
+        store.applyEventReducerOutput(output)
+        withExtendedLifetime(cancellable) {}
+
+        XCTAssertEqual(publishCount, 0)
+        XCTAssertEqual(store.sessions, [session])
+        XCTAssertEqual(store.sessionsByID[sessionID], session)
+        XCTAssertEqual(store.sessionIndexByID[sessionID], 0)
+    }
+
+    func testEventReducerBatchDefersNestedCommitToOutermostOutput() throws {
+        let store = makeEventReducerTestStore()
+        let sessionID = "session_batch_reentrant"
+        let session = makeSession(
+            id: sessionID,
+            projectID: "project_batch",
+            title: "同步重入",
+            status: SessionStatus.running.rawValue,
+            source: "codex"
+        )
+        let nestedApproval = ApprovalSummary(
+            id: "approval_reentrant",
+            title: "重入审批",
+            kind: "command",
+            count: 1
+        )
+        store.sessions = [session]
+
+        var nestedOutput = EventReducerOutput()
+        nestedOutput.pendingApprovalUpdates = [(sessionID, nestedApproval)]
+
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: sessionID,
+            turnID: "turn_reentrant",
+            itemID: "message_reentrant",
+            messageID: "message_reentrant",
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: Date()
+        )
+        var outerOutput = EventReducerOutput()
+        outerOutput.statusUpdates = [(sessionID, SessionStatus.waitingForApproval.rawValue)]
+        // foregroundActivityBySessionID 是 @Published；订阅者会在外层批次尚未提交时同步重入。
+        outerOutput.foregroundUpdates = [(sessionID, .receivingAssistant, nil)]
+        outerOutput.messageMutations = [
+            .completed(
+                AgentMessage(
+                    id: "message_reentrant",
+                    sessionID: sessionID,
+                    turnID: "turn_reentrant",
+                    itemID: "message_reentrant",
+                    role: .assistant,
+                    content: "外层提交后的预览",
+                    revision: 1
+                ),
+                metadata,
+                sessionID
+            )
+        ]
+
+        var publishCount = 0
+        let sessionsCancellable = store.$sessions.dropFirst().sink { _ in
+            publishCount += 1
+        }
+        let reentrantCancellable = store.$foregroundActivityBySessionID
+            .dropFirst()
+            .prefix(1)
+            .sink { _ in
+                store.applyEventReducerOutput(nestedOutput)
+            }
+
+        store.applyEventReducerOutput(outerOutput)
+        withExtendedLifetime((sessionsCancellable, reentrantCancellable)) {}
+
+        let finalSession = try XCTUnwrap(store.sessionsByID[sessionID])
+        XCTAssertEqual(publishCount, 1)
+        XCTAssertEqual(finalSession.status, SessionStatus.waitingForApproval.rawValue)
+        XCTAssertEqual(finalSession.pendingApproval, nestedApproval)
+        XCTAssertEqual(finalSession.preview, "外层提交后的预览")
+        XCTAssertEqual(store.sessions, [finalSession])
+        XCTAssertEqual(store.sessionIndexByID[sessionID], 0)
+        XCTAssertNil(store.eventReducerSessionMutationBatch)
+    }
+
+    func testEventReducerDefersSessionsPublisherReentryUntilCommitCompletes() throws {
+        let store = makeEventReducerTestStore()
+        let sessionID = "session_batch_publisher_reentrant"
+        let session = makeSession(
+            id: sessionID,
+            projectID: "project_batch",
+            title: "发布期间重入",
+            status: SessionStatus.running.rawValue,
+            source: "codex"
+        )
+        let nestedApproval = ApprovalSummary(
+            id: "approval_publisher_reentrant",
+            title: "发布期间审批",
+            kind: "command",
+            count: 1
+        )
+        store.sessions = [session]
+
+        var nestedOutput = EventReducerOutput()
+        nestedOutput.pendingApprovalUpdates = [(sessionID, nestedApproval)]
+        var outerOutput = EventReducerOutput()
+        outerOutput.statusUpdates = [(sessionID, SessionStatus.waitingForApproval.rawValue)]
+
+        var publishCount = 0
+        var publishedApprovalFlags: [Bool] = []
+        let cancellable = store.$sessions.dropFirst().sink { publishedSessions in
+            publishCount += 1
+            publishedApprovalFlags.append(publishedSessions.first?.pendingApproval == nestedApproval)
+            if publishCount == 1 {
+                // @Published 在 canonical sessions 实际写入前调用这里；内层 output 必须延后，
+                // 否则外层 setter 返回时会把它覆盖。
+                store.applyEventReducerOutput(nestedOutput)
+            }
+        }
+
+        store.applyEventReducerOutput(outerOutput)
+        withExtendedLifetime(cancellable) {}
+
+        let finalSession = try XCTUnwrap(store.sessionsByID[sessionID])
+        XCTAssertEqual(publishCount, 2)
+        XCTAssertEqual(publishedApprovalFlags, [false, true])
+        XCTAssertEqual(finalSession.status, SessionStatus.waitingForApproval.rawValue)
+        XCTAssertEqual(finalSession.pendingApproval, nestedApproval)
+        XCTAssertEqual(store.sessions, [finalSession])
+        XCTAssertEqual(store.sessionIndexByID[sessionID], 0)
+        XCTAssertNil(store.eventReducerSessionMutationBatch)
+        XCTAssertFalse(store.isPublishingEventReducerSessions)
+        XCTAssertTrue(store.deferredEventReducerOutputs.isEmpty)
+        XCTAssertFalse(store.isDrainingDeferredEventReducerOutputs)
+    }
+
+    private func makeEventReducerTestStore() -> SessionStore {
+        SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+    }
+
     func testTurnCompletedNotificationPreservesFailedAndInterruptedLifecycle() async throws {
         for (wireStatus, expectedLifecycle, expectedSessionStatus) in [
             ("failed", ConversationTurnLifecycle.failed, SessionStatus.failed.rawValue),
@@ -2673,7 +2998,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
     func testSessionStoreRetainsComposerSendModeAcrossComposerRecreation() {
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore()
         )
@@ -2793,6 +3118,98 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(restored.serviceTier, "priority")
     }
 
+    func testDefaultModelPreferencesKeepCodexAndClaudeIndependent() throws {
+        let suiteName = "DefaultModelPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let options = CodexAppServerModelOption.builtInFallback
+            + CodexAppServerModelOption.builtInClaudeFallback
+        let luna = try XCTUnwrap(
+            options.first { $0.model == "gpt-5.6-luna" }
+        )
+        let opus = try XCTUnwrap(
+            options.first { $0.model == "opus" }
+        )
+        defaults.set(luna.id, forKey: DefaultModelPreferences.codexModelOptionIDKey)
+        defaults.set(CodexAppServerReasoningEffort.max.rawValue, forKey: DefaultModelPreferences.codexReasoningEffortKey)
+        defaults.set(opus.id, forKey: DefaultModelPreferences.claudeModelOptionIDKey)
+        defaults.set(CodexAppServerReasoningEffort.xhigh.rawValue, forKey: DefaultModelPreferences.claudeReasoningEffortKey)
+
+        let codex = try XCTUnwrap(
+            DefaultModelPreferences.resolvedSelection(
+                for: DefaultModelRuntime.codex.rawValue,
+                allOptions: options,
+                defaults: defaults
+            )
+        )
+        let claude = try XCTUnwrap(
+            DefaultModelPreferences.resolvedSelection(
+                for: DefaultModelRuntime.claude.rawValue,
+                allOptions: options,
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(codex.option.model, "gpt-5.6-luna")
+        XCTAssertEqual(codex.effort, .max)
+        XCTAssertEqual(claude.option.model, "opus")
+        XCTAssertEqual(claude.effort, .xhigh)
+
+        var codexTurnOptions = CodexAppServerTurnOptions.default
+        DefaultModelPreferences.applyDefault(
+            for: DefaultModelRuntime.codex.rawValue,
+            allOptions: options,
+            defaults: defaults,
+            to: &codexTurnOptions
+        )
+        XCTAssertEqual(codexTurnOptions.model, "gpt-5.6-luna")
+        XCTAssertEqual(codexTurnOptions.reasoningEffort, .max)
+        XCTAssertNil(codexTurnOptions.runtimeProvider)
+
+        var claudeTurnOptions = CodexAppServerTurnOptions.default
+        DefaultModelPreferences.applyDefault(
+            for: DefaultModelRuntime.claude.rawValue,
+            allOptions: options,
+            defaults: defaults,
+            to: &claudeTurnOptions
+        )
+        XCTAssertEqual(claudeTurnOptions.model, "opus")
+        XCTAssertEqual(claudeTurnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(claudeTurnOptions.reasoningEffort, .xhigh)
+        XCTAssertEqual(claudeTurnOptions.runtimeProvider, "claude")
+    }
+
+    func testDefaultModelPreferencesFallBackWhenStoredSelectionIsUnavailable() throws {
+        let suiteName = "DefaultModelPreferencesFallbackTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set("removed-model", forKey: DefaultModelPreferences.codexModelOptionIDKey)
+        defaults.set(CodexAppServerReasoningEffort.ultra.rawValue, forKey: DefaultModelPreferences.codexReasoningEffortKey)
+
+        let selection = try XCTUnwrap(
+            DefaultModelPreferences.resolvedSelection(
+                for: DefaultModelRuntime.codex.rawValue,
+                allOptions: [CodexAppServerModelOption.builtInFallback[2]],
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(selection.option.model, "gpt-5.6-luna")
+        XCTAssertEqual(selection.effort, .xhigh)
+
+        var turnOptions = CodexAppServerTurnOptions.default
+        DefaultModelPreferences.applyDefault(
+            for: DefaultModelRuntime.codex.rawValue,
+            allOptions: [CodexAppServerModelOption.builtInFallback[2]],
+            defaults: defaults,
+            to: &turnOptions
+        )
+        XCTAssertEqual(turnOptions.model, "gpt-5.6-luna")
+        XCTAssertEqual(turnOptions.reasoningEffort, .xhigh)
+    }
+
     func testComposerDraftCacheKeepsDraftsScopedToSessionOrNewProject() {
         let sessionScope = ComposerDraftScopeKey.current(selectedSessionID: "thread-a", selectedProjectID: "project-1")
         let newProjectScope = ComposerDraftScopeKey.current(selectedSessionID: nil, selectedProjectID: "project-1")
@@ -2896,7 +3313,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
     func testSessionStoreRetainsComposerDraftAcrossComposerRecreation() {
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore()
         )
@@ -2923,7 +3340,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
     func testSessionStoreRetainsComposerModelSelectionAcrossComposerRecreation() throws {
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore()
         )

@@ -505,6 +505,8 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+        // iPhone 竖屏与 iPad 竖屏共用同一套会话行结构，项目锚点不再按设备缩小。
+        XCTAssertTrue(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
@@ -524,6 +526,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
     }
 
     func testWorkbenchLayoutUsesSheetNavigationOnMediumIPadWidth() {
@@ -538,6 +541,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertTrue(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
     }
 
     func testWorkbenchLayoutKeepsSplitNavigationOnWidePadWidth() {
@@ -555,6 +559,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertTrue(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
         XCTAssertEqual(layout.projectColumn.ideal, 330)
         XCTAssertEqual(layout.titleMaxWidth, 340)
     }
@@ -579,6 +584,38 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(narrowPad.usesFloatingSidebarSurface)
         XCTAssertTrue(widePad.usesFloatingSidebarSurface)
         XCTAssertFalse(widePhone.usesFloatingSidebarSurface)
+        XCTAssertTrue(narrowPad.prefersSessionTableDensity)
+        XCTAssertTrue(widePad.prefersSessionTableDensity)
+        XCTAssertTrue(widePhone.prefersSessionTableDensity)
+    }
+
+    func testSessionTableDensityFallsBackOnlyBelowSlideOverWidth() {
+        let slideOverPad = WorkbenchLayout(
+            containerWidth: 320,
+            horizontalSizeClass: .compact,
+            isPad: true
+        )
+        let phonePortrait = WorkbenchLayout(
+            containerWidth: 390,
+            horizontalSizeClass: .compact,
+            isPad: false
+        )
+        let splitViewPad = WorkbenchLayout(
+            containerWidth: 699,
+            horizontalSizeClass: .compact,
+            isPad: true
+        )
+        let portraitPad = WorkbenchLayout(
+            containerWidth: 744,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
+
+        // 只有 Slide Over 这类真正窄的窗口才放弃锚点列；手机与分屏都保留同一套结构。
+        XCTAssertFalse(slideOverPad.prefersSessionTableDensity)
+        XCTAssertTrue(phonePortrait.prefersSessionTableDensity)
+        XCTAssertTrue(splitViewPad.prefersSessionTableDensity)
+        XCTAssertTrue(portraitPad.prefersSessionTableDensity)
     }
 
     func testConversationLayoutFitsPhonePortraitWidth() {

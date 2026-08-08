@@ -48,6 +48,46 @@ struct ModelReasoningGridLayout: Equatable {
         ModelReasoningGridMetrics.standardContentHeight(modelRowCount: modelRowCount)
     }
 
+    /// 返回某个模型在标准网格各列实际对应的推理档位。
+    /// Codex 的模型能力并不完全一致：Sol/Terra 的第四列是 Ultra，Luna
+    /// 的同一位置应落到它真实支持的 Max，列数保持不变以维持网格布局。
+    func efforts(for option: CodexAppServerModelOption?) -> [CodexAppServerReasoningEffort] {
+        guard let option else { return efforts }
+        return ModelReasoningGridCatalog.standardEfforts(
+            for: option,
+            columns: efforts,
+            kind: kind
+        )
+    }
+
+    func effort(for option: CodexAppServerModelOption, column: Int) -> CodexAppServerReasoningEffort? {
+        let modelEfforts = efforts(for: option)
+        guard modelEfforts.indices.contains(column) else { return nil }
+        return modelEfforts[column]
+    }
+
+    func effortColumn(
+        for effort: CodexAppServerReasoningEffort,
+        option: CodexAppServerModelOption
+    ) -> Int? {
+        efforts(for: option).firstIndex(of: effort)
+    }
+
+    /// 标准表头保持统一；当某个模型用不同协议档位复用该列时，
+    /// 只在对应格子内显示真实协议值，避免把整列表头改成模型专属文案。
+    func inlineEffortLabel(
+        for option: CodexAppServerModelOption,
+        column: Int
+    ) -> String? {
+        guard efforts.indices.contains(column),
+              let mappedEffort = effort(for: option, column: column),
+              mappedEffort != efforts[column]
+        else {
+            return nil
+        }
+        return mappedEffort.rawValue
+    }
+
     func model(matching modelID: String?) -> CodexAppServerModelOption? {
         guard let modelID else { return nil }
         return models.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
@@ -66,9 +106,12 @@ struct ModelReasoningGridLayout: Equatable {
         else {
             return nil
         }
+        guard let effort = effort(for: models[modelRow], column: effortColumn) else {
+            return nil
+        }
         return ModelReasoningGridSelection(
             modelID: models[modelRow].model,
-            effort: efforts[effortColumn]
+            effort: effort
         )
     }
 }
@@ -183,6 +226,24 @@ enum ModelReasoningGridCatalog {
         kind == .claude ? claudeStandardEfforts : codexStandardEfforts
     }
 
+    static func standardEfforts(
+        for option: CodexAppServerModelOption,
+        columns: [CodexAppServerReasoningEffort],
+        kind: ModelReasoningGridKind
+    ) -> [CodexAppServerReasoningEffort] {
+        guard kind == .codex,
+              columns.contains(.ultra),
+              supports(.max, option: option, kind: kind),
+              !supports(.ultra, option: option, kind: kind)
+        else {
+            return columns
+        }
+
+        // Luna 没有 Ultra，但有 Max；替换同一列而不是扩展列数，避免破坏
+        // 现有四列网格的触控区域和布局高度。
+        return columns.map { $0 == .ultra ? .max : $0 }
+    }
+
     static func triggerTitle(
         for modelID: String,
         effort: CodexAppServerReasoningEffort,
@@ -255,7 +316,7 @@ enum ModelReasoningGridCatalog {
         layout: ModelReasoningGridLayout
     ) -> [CodexAppServerReasoningEffort] {
         guard let option else { return [] }
-        return layout.efforts.filter { supports($0, option: option, kind: layout.kind) }
+        return layout.efforts(for: option).filter { supports($0, option: option, kind: layout.kind) }
     }
 
     static func isStandardEffortAvailable(
@@ -263,7 +324,7 @@ enum ModelReasoningGridCatalog {
         option: CodexAppServerModelOption,
         layout: ModelReasoningGridLayout
     ) -> Bool {
-        layout.efforts.contains(effort) && supports(effort, option: option, kind: layout.kind)
+        layout.efforts(for: option).contains(effort) && supports(effort, option: option, kind: layout.kind)
     }
 
     static func normalizedVisibleEffort(
@@ -657,10 +718,18 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                     height: ModelReasoningGridMetrics.effortHeaderHeight
                 )
             HStack(spacing: 0) {
-                ForEach(layout.efforts) { effort in
+                ForEach(Array(layout.efforts.indices), id: \.self) { column in
+                    let effort = layout.efforts[column]
+                    let selectedColumnEffort = layout.model(matching: activeSelection.modelID)
+                        .flatMap { layout.effort(for: $0, column: column) }
+                        ?? effort
                     Text(ModelReasoningGridCatalog.effortTitle(effort))
                         .font(themeStore.uiFont(.caption, weight: .semibold))
-                        .foregroundStyle(activeSelection.effort == effort ? tokens.accent : tokens.primaryText)
+                        .foregroundStyle(
+                            activeSelection.effort == selectedColumnEffort
+                                ? tokens.accent
+                                : tokens.primaryText
+                        )
                         .lineLimit(effort == .xhigh ? 2 : 1)
                         .minimumScaleFactor(0.8)
                         .allowsTightening(true)
@@ -706,8 +775,15 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                 VStack(spacing: 0) {
                     ForEach(layout.models) { option in
                         HStack(spacing: 0) {
-                            ForEach(layout.efforts) { effort in
-                                gridCell(option: option, effort: effort, tokens: tokens)
+                            ForEach(Array(layout.efforts.indices), id: \.self) { column in
+                                let effort = layout.effort(for: option, column: column)
+                                let inlineEffortLabel = layout.inlineEffortLabel(for: option, column: column)
+                                gridCell(
+                                    option: option,
+                                    effort: effort,
+                                    inlineEffortLabel: inlineEffortLabel,
+                                    tokens: tokens
+                                )
                                     .frame(width: cellSize.width, height: cellSize.height)
                             }
                         }
@@ -733,14 +809,17 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
 
     private func gridCell(
         option: CodexAppServerModelOption,
-        effort: CodexAppServerReasoningEffort,
+        effort: CodexAppServerReasoningEffort?,
+        inlineEffortLabel: String?,
         tokens: ThemeTokens
     ) -> some View {
-        let isAvailable = ModelReasoningGridCatalog.isStandardEffortAvailable(
-            effort,
-            option: option,
-            layout: layout
-        )
+        let isAvailable = effort.map {
+            ModelReasoningGridCatalog.isStandardEffortAvailable(
+                $0,
+                option: option,
+                layout: layout
+            )
+        } ?? false
         let candidate = ModelReasoningGridSelection(modelID: option.model, effort: effort)
         let selected = isAvailable && activeSelection == candidate
 
@@ -753,13 +832,25 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                         .fill(tokens.accent.opacity(0.055))
                         .padding(4)
                 }
-                Circle()
-                    .fill(
-                        selected
-                            ? tokens.accent.opacity(0.3)
-                            : tokens.tertiaryText.opacity(isAvailable ? 0.34 : 0.12)
-                    )
-                    .frame(width: selected ? 8 : 6, height: selected ? 8 : 6)
+                if let inlineEffortLabel {
+                    Text(inlineEffortLabel)
+                        .font(themeStore.uiFont(.caption2, weight: selected ? .bold : .semibold))
+                        .foregroundStyle(
+                            selected
+                                ? tokens.accent
+                                : tokens.tertiaryText.opacity(isAvailable ? 0.72 : 0.24)
+                        )
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                } else {
+                    Circle()
+                        .fill(
+                            selected
+                                ? tokens.accent.opacity(0.3)
+                                : tokens.tertiaryText.opacity(isAvailable ? 0.34 : 0.12)
+                        )
+                        .frame(width: selected ? 8 : 6, height: selected ? 8 : 6)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -769,7 +860,7 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
         .hoverEffect(.highlight)
         .accessibilityLabel(
             "\(ModelReasoningGridCatalog.shortTitle(for: option, kind: layout.kind)), "
-                + ModelReasoningGridCatalog.effortTitle(effort)
+                + (effort.map(ModelReasoningGridCatalog.effortTitle) ?? "")
         )
         .accessibilityValue(
             isAvailable
@@ -939,7 +1030,7 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
     ) -> CGPoint? {
         guard let effort = selection.effort,
               let row = layout.models.firstIndex(where: { $0.model == selection.modelID }),
-              let column = layout.efforts.firstIndex(of: effort),
+              let column = layout.effortColumn(for: effort, option: layout.models[row]),
               ModelReasoningGridCatalog.isStandardEffortAvailable(
                   effort,
                   option: layout.models[row],
@@ -1042,7 +1133,8 @@ private struct ModelReasoningAccessiblePicker: View {
             }
             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
 
-            ForEach(layout.efforts) { effort in
+            let efforts = ModelReasoningGridCatalog.visibleEfforts(for: activeOption, layout: layout)
+            ForEach(efforts) { effort in
                 let isAvailable = activeOption.map {
                     ModelReasoningGridCatalog.isStandardEffortAvailable(effort, option: $0, layout: layout)
                 } ?? false

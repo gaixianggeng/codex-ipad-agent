@@ -428,21 +428,19 @@ extension CodexAppServerSessionRuntime {
         _ = await refreshRateLimitIfAvailable()
     }
 
-    func refreshAccountTokenUsage() async -> AccountTokenUsageFetch {
+    func refreshAccountTokenUsage(forceRefresh: Bool = false) async -> AccountTokenUsageFetch {
         if let accountTokenUsageRefreshTask {
             return await accountTokenUsageRefreshTask.value
         }
 
-        let task = Task { [self] in
-            await performAccountTokenUsageRefresh()
-        }
+        let task = Task { [self] in await performAccountTokenUsageRefresh(forceRefresh: forceRefresh) }
         accountTokenUsageRefreshTask = task
         let fetch = await task.value
         accountTokenUsageRefreshTask = nil
         return fetch
     }
 
-    func performAccountTokenUsageRefresh() async -> AccountTokenUsageFetch {
+    func performAccountTokenUsageRefresh(forceRefresh: Bool = false) async -> AccountTokenUsageFetch {
         // 账号活动是 Codex/ChatGPT 专属能力；Claude bridge 没有同构数据，必须 fail closed。
         guard runtimeProvider == "codex" else {
             return .unsupported
@@ -461,7 +459,8 @@ extension CodexAppServerSessionRuntime {
 
         do {
             let result = try await sendRecoveringFromStaleInitialization(
-                CodexAppServerRequestBuilder(allowlistedProjects: config.projects).accountUsageRead(),
+                CodexAppServerRequestBuilder(allowlistedProjects: config.projects)
+                    .accountUsageRead(forceRefresh: forceRefresh),
                 timeout: min(requestTimeout, 10)
             )
             guard let snapshot = accountTokenUsageSnapshot(fromPayload: result) else {

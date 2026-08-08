@@ -9,7 +9,7 @@ enum SettingsLayoutMetrics {
     static let iconSlot: CGFloat = 28
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
-    static let statusModuleCornerRadius: CGFloat = 20
+    static let statusModuleCornerRadius = WorkbenchPageLayout.contentPanelCornerRadius
 }
 
 enum TokenCountFormatter {
@@ -81,6 +81,8 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -306,23 +308,33 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appearance")
 
-                SettingsChoiceRow(
-                    title: L10n.text("ui.language"),
-                    systemImage: "globe",
-                    options: AppLanguage.allCases,
-                    selection: appLanguageSelection
-                )
+                NavigationLink {
+                    LanguageSettingsView(
+                        appLanguageRawValue: $appLanguageRawValue,
+                        voiceInputProviderRawValue: $voiceInputProviderRawValue
+                    )
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.language"),
+                        value: languageSettingsSummary,
+                        systemImage: "globe"
+                    )
+                }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
 
-                SettingsChoiceRow(
-                    title: L10n.text("ui.voice_input"),
-                    systemImage: "waveform",
-                    options: VoiceInputProvider.availableProviders(),
-                    selection: voiceInputProviderSelection
-                )
+                NavigationLink {
+                    DefaultModelSettingsView()
+                } label: {
+                    // 两个 runtime 的模型 + 档位拼在一行会被截断成一串噪音，
+                    // 详情页已经把它们平铺开了，这里只做入口。
+                    SettingsValueLabel(
+                        title: L10n.text("ui.default_model"),
+                        systemImage: "cpu"
+                    )
+                }
                 .settingsStandardListRow()
-                .accessibilityIdentifier("settings.voiceInput")
+                .accessibilityIdentifier("settings.defaultModels")
 
                 // 四个模式各自有 detail，而且是安全相关的选择：值得整页逐条读完再选。
                 SettingsChoiceRow(
@@ -383,6 +395,12 @@ struct SettingsView: View {
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .listRowBackground(Color.clear)
         .themedSettingsForm(tokens: tokens)
+        // 紧凑 Tab 下允许内容经过玻璃栏，但最后一组必须能完整滚到栏上方。
+        .contentMargins(
+            .bottom,
+            hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
+            for: .scrollContent
+        )
         .task(id: appStore.activeHostScope) {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
@@ -444,7 +462,7 @@ struct SettingsView: View {
 
     private func refreshAccountUsage() async {
         async let codexQuota: Void = sessionStore.refreshCodexUsage()
-        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage()
+        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage(forceRefresh: true)
         if sessionStore.hasClaudeRuntimeChannel {
             await sessionStore.refreshClaudeUsage()
         }
@@ -508,6 +526,14 @@ struct SettingsView: View {
                 VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
             },
             set: { voiceInputProviderRawValue = $0.rawValue }
+        )
+    }
+
+    private var languageSettingsSummary: String {
+        L10n.format(
+            "ui.language_settings_summary",
+            appLanguageSelection.wrappedValue.displayName,
+            voiceInputProviderSelection.wrappedValue.title
         )
     }
 

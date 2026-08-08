@@ -229,7 +229,7 @@ Linux 使用 `"$HOME/.local/bin/agentd" pair --qr-only`。
 
 Codex 是默认 Runtime。不要写死模型版本；未显式选择模型时交给本机 Codex rollout。保持现有 Codex 登录态、app-server Token 和审批策略。
 
-Claude Code 默认关闭并属于实验通道。它使用一个由 `agentd` 监督的 resident bridge；每个 Claude thread 对应一个 headless 进程。移动端断线不会自动重试 `turn/start`，重连使用 sequence replay 或 `thread/read`，避免重复写文件或执行命令。
+Claude Code 属于实验通道。Mimi Remote Mac 启动时会在本机检测随包 bridge、Claude CLI 和登录态：三项都通过且用户没有明确关闭时自动启用，否则保持关闭；设置页中的明确开关会覆盖后续自动检测。Homebrew / Linux 不执行这项 App 启动策略。它使用一个由 `agentd` 监督的 resident bridge；每个 Claude thread 对应一个 headless 进程。移动端断线不会自动重试 `turn/start`，重连使用 sequence replay 或 `thread/read`，避免重复写文件或执行命令。
 
 启用 Claude 前确认用户接受以下边界：
 
@@ -240,7 +240,7 @@ Claude Code 默认关闭并属于实验通道。它使用一个由 `agentd` 监�
 
 按安装形态处理 bridge：
 
-- **Mimi Remote Mac**：使用 App 内置 bridge，不执行 `cargo install`，不写入其他机器的绝对路径。只修改 `claude.enabled` 等必要字段，保留或清空 `bridge_bin` 以使用随包 sibling；不要打印完整配置文件。
+- **Mimi Remote Mac**：使用 App 内置 bridge，不执行 `cargo install`，不写入其他机器的 bridge 绝对路径。App 通过 `agentd runtime --claude=auto|enabled|disabled` 原子更新 `claude.enabled`、`claude.activation` 和检测到的本机 Claude CLI 路径，保留其他字段与 `0600` 权限；不要打印完整配置文件。
 - **Homebrew / Linux**：安装 `alleycat-claude-bridge >= 0.2.1`，把实际绝对路径写入 `claude.bridge_bin`。
 
 CLI 外置 bridge 安装命令：
@@ -251,7 +251,7 @@ cargo install --git https://github.com/gaixianggeng/mimi-remote.git \
 command -v alleycat-claude-bridge
 ```
 
-配置文件含长期 Token。修改前创建权限为用户私有的本地备份，使用 JSON 解析器原子修改，只更新 `claude` 字段，保持文件权限为 `0600`；不要用 `cat`、日志或聊天展示完整内容。Mac App 当前没有 Runtime 开关时，让用户确认后再执行这一步。
+配置文件含长期 Token。修改前创建权限为用户私有的本地备份，使用 JSON 解析器原子修改，只更新 `claude` 字段，保持文件权限为 `0600`；不要用 `cat`、日志或聊天展示完整内容。Mac App 优先使用设置页开关；用户明确关闭后，不得在后续启动中重新自动启用。
 
 修改后从当前 service owner 的入口重启：
 

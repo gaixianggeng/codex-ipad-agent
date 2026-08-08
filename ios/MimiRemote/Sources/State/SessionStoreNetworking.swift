@@ -167,6 +167,7 @@ protocol SessionStoreAPIClient {
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch
 }
 
 extension SessionStoreAPIClient {
@@ -224,6 +225,10 @@ extension SessionStoreAPIClient {
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         // 没有实现该能力的客户端是“不提供”，不是“请求失败”。
         .unsupported
+    }
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
+        // 兼容旧客户端与测试替身；生产客户端会覆盖该方法并把强制刷新提示传到 agentd。
+        try await refreshAccountTokenUsage()
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []
@@ -453,29 +458,110 @@ extension SessionStoreAPIClient {
 
 @MainActor
 final class TerminalStreamStore {
+    /// 每个数组元素代表一个“逻辑事件”。连续文本增量只保存原始 chunk，
+    /// 不在 append 时复制已有前缀；真正交付前再一次性线性拼接，避免高频 token 造成 O(n²)。
+    private struct BufferedEvent {
+        var event: AgentEvent
+        private var textChunks: [String]?
+
+        init(_ event: AgentEvent) {
+            self.event = event
+            switch event {
+            case .assistantDelta(let delta, _):
+                textChunks = [delta.text]
+            case .logDelta(let delta, _):
+                textChunks = [delta.text]
+            default:
+                textChunks = nil
+            }
+        }
+
+        var canMergeText: Bool {
+            textChunks != nil
+        }
+
+        mutating func appendTextChunk(from next: AgentEvent) {
+            switch next {
+            case .assistantDelta(let delta, _):
+                textChunks?.append(delta.text)
+                event = next
+            case .logDelta(let delta, _):
+                textChunks?.append(delta.text)
+                event = next
+            default:
+                assertionFailure("only text events can append chunks")
+            }
+        }
+
+        mutating func replace(with next: AgentEvent) {
+            event = next
+            textChunks = nil
+        }
+
+        func materialized() -> AgentEvent {
+            guard let textChunks else {
+                return event
+            }
+            let text = textChunks.joined()
+            switch event {
+            case .assistantDelta(let delta, let metadata):
+                return .assistantDelta(
+                    AgentDelta(text: text, role: delta.role, kind: delta.kind),
+                    metadata
+                )
+            case .logDelta(let delta, let metadata):
+                return .logDelta(
+                    LogDelta(text: text, stream: delta.stream),
+                    metadata
+                )
+            default:
+                assertionFailure("text chunks must belong to a text event")
+                return event
+            }
+        }
+    }
+
+    /// 以引用类型持有单个 lease 的数组，避免从 Dictionary 取出值后每个 append 都触发数组 CoW。
+    private final class LeaseBuffer {
+        var events: [BufferedEvent] = []
+    }
+
     let maxBatchSize: Int
-    var eventsByLease: [HostSessionLease: [AgentEvent]] = [:]
+    private var eventsByLease: [HostSessionLease: LeaseBuffer] = [:]
 
     init(maxBatchSize: Int = 64) {
         self.maxBatchSize = max(1, maxBatchSize)
     }
 
     func append(_ event: AgentEvent, lease: HostSessionLease) -> Bool {
-        var events = eventsByLease[lease] ?? []
-        if let previous = events.last,
-           let merged = previous.mergingContiguous(with: event) {
-            events[events.index(before: events.endIndex)] = merged
+        let buffer: LeaseBuffer
+        if let existing = eventsByLease[lease] {
+            buffer = existing
         } else {
-            events.append(event)
+            let created = LeaseBuffer()
+            eventsByLease[lease] = created
+            buffer = created
         }
-        eventsByLease[lease] = events
-        return events.count >= maxBatchSize
+
+        if let previousIndex = buffer.events.indices.last,
+           Self.canMergeContiguous(buffer.events[previousIndex].event, with: event) {
+            if buffer.events[previousIndex].canMergeText {
+                buffer.events[previousIndex].appendTextChunk(from: event)
+            } else {
+                // messageCompleted 的 plan/reasoningSummary 是累计快照，保留最新事件。
+                buffer.events[previousIndex].replace(with: event)
+            }
+        } else {
+            buffer.events.append(BufferedEvent(event))
+        }
+        return buffer.events.count >= maxBatchSize
     }
 
     func drain(lease: HostSessionLease) -> [AgentEvent] {
-        let events = eventsByLease[lease] ?? []
-        eventsByLease.removeValue(forKey: lease)
-        return events
+        guard let buffer = eventsByLease.removeValue(forKey: lease) else {
+            return []
+        }
+        return buffer.events.map { $0.materialized() }
     }
 
     func removeAll(lease: HostSessionLease) {
@@ -484,6 +570,35 @@ final class TerminalStreamStore {
 
     func removeAll(profileID: String) {
         eventsByLease = eventsByLease.filter { $0.key.hostScope.profileID != profileID }
+    }
+
+    /// 与 AgentEvent.mergingContiguous 保持同一合并判定，但不构造拼接后的 String。
+    /// 这让 append 只追加 chunk/逻辑事件，文本复制集中到 drain 的一次性 joined()。
+    private static func canMergeContiguous(_ event: AgentEvent, with next: AgentEvent) -> Bool {
+        switch (event, next) {
+        case let (.assistantDelta(previousDelta, previousMetadata), .assistantDelta(nextDelta, nextMetadata)):
+            return sameItem(previousMetadata, nextMetadata)
+                && previousDelta.role == nextDelta.role
+                && previousDelta.kind == nextDelta.kind
+        case let (.logDelta(previousDelta, previousMetadata), .logDelta(nextDelta, nextMetadata)):
+            return sameItem(previousMetadata, nextMetadata)
+                && previousDelta.stream == nextDelta.stream
+        case let (.messageCompleted(previousMessage, previousMetadata), .messageCompleted(nextMessage, nextMetadata)):
+            return previousMessage.role == .system
+                && nextMessage.role == .system
+                && previousMessage.kind == nextMessage.kind
+                && (nextMessage.kind == .plan || nextMessage.kind == .reasoningSummary)
+                && sameItem(previousMetadata, nextMetadata)
+        default:
+            return false
+        }
+    }
+
+    private static func sameItem(_ lhs: AgentEventMetadata, _ rhs: AgentEventMetadata) -> Bool {
+        lhs.sessionID == rhs.sessionID
+            && lhs.turnID == rhs.turnID
+            && lhs.itemID == rhs.itemID
+            && lhs.messageID == rhs.messageID
     }
 
 }

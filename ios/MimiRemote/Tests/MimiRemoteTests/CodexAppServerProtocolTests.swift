@@ -460,6 +460,10 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [])
         XCTAssertEqual(builder.accountUsageRead().method, "account/usage/read")
         XCTAssertNil(builder.accountUsageRead().params)
+        XCTAssertEqual(
+            builder.accountUsageRead(forceRefresh: true).params?.objectValue?["mimiForceRefresh"]?.boolValue,
+            true
+        )
 
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
@@ -1372,7 +1376,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
     }
 
-    func testCodexStandardMenuKeepsFullCapabilitiesButHidesLowAndMax() {
+    func testCodexStandardMenuUsesModelSpecificFourthEffort() {
         let options = CodexAppServerModelOption.builtInFallback
         let sol = options[0]
         let terra = options[1]
@@ -1384,7 +1388,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(layout.effortColumnCount, 4)
         XCTAssertEqual(
             layout.selection(modelRow: 2, effortColumn: 3),
-            ModelReasoningGridSelection(modelID: luna.model, effort: .ultra)
+            ModelReasoningGridSelection(modelID: luna.model, effort: .max)
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.allSupportedEfforts(for: sol),
@@ -1408,7 +1412,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.visibleEfforts(for: luna, layout: layout),
-            [.medium, .high, .xhigh]
+            [.medium, .high, .xhigh, .max]
         )
         XCTAssertEqual(sol.defaultReasoningEffort, "xhigh")
         XCTAssertTrue(sol.isDefault)

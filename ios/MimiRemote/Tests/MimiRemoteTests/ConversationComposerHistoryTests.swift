@@ -2019,7 +2019,7 @@ extension ConversationDataFlowTests {
     }
 
     func testSelectingLoadedSessionRetainsConversationCache() async {
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         let retainedLimit = ConversationStore.retainedSessionLimit

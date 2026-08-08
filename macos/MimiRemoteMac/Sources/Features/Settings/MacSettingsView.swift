@@ -32,6 +32,34 @@ struct MacSettingsView: View {
                 }
             }
 
+            Section("Claude") {
+                Toggle("启用 Claude 实验通道", isOn: Binding(
+                    get: { store.claudeEnabled },
+                    set: { enabled in
+                        Task { await store.setClaudeEnabled(enabled) }
+                    }
+                ))
+                .disabled(!store.canChangeClaude)
+
+                LabeledContent("运行状态") {
+                    HStack(spacing: 6) {
+                        if store.isUpdatingClaude {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(store.isUpdatingClaude ? "正在更新" : store.claudeStatusTitle)
+                    }
+                }
+
+                Text(store.claudeStatusDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("需要本机安装并登录 Claude Code。启用或关闭时会安全地重新加载 agentd；Codex 主通道不受影响。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("隐私") {
                 Text("Mimi Remote Mac 不上传日志、代码、Token 或使用数据。长期 Token 只保存在 agentd 的私有配置中，App 只处理短期配对票据。")
                     .font(.caption)
@@ -40,7 +68,7 @@ struct MacSettingsView: View {
         }
         .formStyle(.grouped)
         .scenePadding()
-        .frame(width: 480, height: 390)
+        .frame(width: 500, height: 540)
         .alert("恢复 Homebrew 服务？", isPresented: $confirmsRestore) {
             Button("取消", role: .cancel) {}
             Button("停止 App 服务并恢复", role: .destructive) {

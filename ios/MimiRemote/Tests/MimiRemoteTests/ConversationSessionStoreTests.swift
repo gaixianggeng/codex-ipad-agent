@@ -60,7 +60,7 @@ extension ConversationDataFlowTests {
         externalReadOnlyRoot.canAcceptDirectInput = false
 
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -129,7 +129,7 @@ extension ConversationDataFlowTests {
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
         let client = MockSessionStoreClient(projects: [project], sessions: [history])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -182,7 +182,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -269,7 +269,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -320,7 +320,7 @@ extension ConversationDataFlowTests {
             }
         )
         let restartedStore = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { restartedClient }
@@ -435,7 +435,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -467,7 +467,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -516,7 +516,7 @@ extension ConversationDataFlowTests {
                 SessionsPage(sessions: globalSessions)
             }
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -609,7 +609,7 @@ extension ConversationDataFlowTests {
                 SessionsPage(sessions: [external])
             }
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -649,7 +649,7 @@ extension ConversationDataFlowTests {
         child.canAcceptDirectInput = false
         let client = MockSessionStoreClient(projects: [project], sessions: [])
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -695,7 +695,7 @@ extension ConversationDataFlowTests {
                 rootProject.id: SessionsPage(sessions: [childSession])
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -733,7 +733,7 @@ extension ConversationDataFlowTests {
                 workspace.path: .success(workspace)
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -791,7 +791,7 @@ extension ConversationDataFlowTests {
                 "/forbidden": .failure(AgentAPIError.server(status: 403, message: "路径不在允许范围内或不可访问"))
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -841,7 +841,7 @@ extension ConversationDataFlowTests {
                 older.id: .success(())
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let preferences = makeSessionListPreferenceStore()
         let store = SessionStore(
             appStore: appStore,
@@ -911,7 +911,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -970,7 +970,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1023,7 +1023,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1069,7 +1069,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let gate = SessionArchiveResponseGate()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let preferences = makeSessionListPreferenceStore()
         let client = MockSessionStoreClient(
             projects: [project],
@@ -1128,7 +1128,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let gate = SessionArchiveResponseGate()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let preferences = makeSessionListPreferenceStore()
         let client = MockSessionStoreClient(
             projects: [project],
@@ -1200,7 +1200,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let gate = SessionArchiveResponseGate()
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let preferences = makeSessionListPreferenceStore()
         let client = MockSessionStoreClient(
             projects: [project],
@@ -1274,7 +1274,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1338,7 +1338,7 @@ extension ConversationDataFlowTests {
             sessionArchiveResults: [session.id: .success(())]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1378,7 +1378,7 @@ extension ConversationDataFlowTests {
                 project.id: SessionsPage(sessions: [session])
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let reminderStore = makeSessionReminderStore()
         let scheduler = FakeSessionReminderScheduler()
         let store = SessionStore(
@@ -1421,7 +1421,7 @@ extension ConversationDataFlowTests {
             status: "history",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let reminderStore = makeSessionReminderStore()
         let scheduler = FakeSessionReminderScheduler(scheduleOutcome: .permissionDenied)
         let store = SessionStore(
@@ -1628,7 +1628,7 @@ extension ConversationDataFlowTests {
                 )
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -1731,7 +1731,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [target]),
             blockOnCall: 1
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -1885,7 +1885,7 @@ extension ConversationDataFlowTests {
                 ))
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1917,7 +1917,7 @@ extension ConversationDataFlowTests {
                 ))
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1950,7 +1950,7 @@ extension ConversationDataFlowTests {
                 ))
             ]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1982,7 +1982,7 @@ extension ConversationDataFlowTests {
             workspaceSessionsError: [workspace.id: AgentAPIError.server(status: 403, message: "cwd 必须来自 projects allowlist")],
             resolveResults: [workspace.path: .failure(AgentAPIError.server(status: 403, message: "路径不在允许范围内或不可访问"))]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -2013,7 +2013,7 @@ extension ConversationDataFlowTests {
             workspaceSessionsError: [workspace.id: AgentAPIError.server(status: 502, message: "连接 app-server gateway 上游失败")],
             resolveResults: [workspace.path: .success(workspace)]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -2044,7 +2044,7 @@ extension ConversationDataFlowTests {
             workspaceSessionsError: [workspace.id: AgentAPIError.server(status: 403, message: "denied")],
             resolveResults: [workspace.path: .failure(AgentAPIError.server(status: 403, message: "denied"))]
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -2070,7 +2070,7 @@ extension ConversationDataFlowTests {
         let client = MockSessionStoreClient(projects: [project], sessions: [latestRunning, selectedHistory])
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -2093,7 +2093,7 @@ extension ConversationDataFlowTests {
         let running = makeSession(id: "sess_auto_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let client = MockSessionStoreClient(projects: [project], sessions: [history, running])
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -2128,7 +2128,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         var sockets: [MockWebSocketClient] = []
@@ -2174,7 +2174,7 @@ extension ConversationDataFlowTests {
             status: "running",
             source: "codex"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(
             projects: [project],
@@ -2230,7 +2230,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [restored]),
             blockOnCall: 1
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -2278,28 +2278,66 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testWorkbenchNavigationBindingSchedulerDefersAndCoalescesEachControl() async {
+    func testWorkbenchNavigationBindingSchedulerCommitsVisualStateBeforeCoalescedSideEffects() async {
         let scheduler = WorkbenchNavigationBindingScheduler()
-        let completed = expectation(description: "两个独立控件的最新导航写入已提交")
+        let completed = expectation(description: "两个独立控件的最新副作用已提交")
         completed.expectedFulfillmentCount = 2
         var operations: [String] = []
+        var selectedTab = "会话"
 
-        scheduler.schedule(on: .compactTab) {
-            operations.append("过期 Tab")
-            completed.fulfill()
-        }
-        scheduler.schedule(on: .compactTab) {
-            operations.append("最新 Tab")
-            completed.fulfill()
-        }
-        scheduler.schedule(on: .compactSessionsPath) {
-            operations.append("会话 Path")
-            completed.fulfill()
-        }
+        scheduler.commit(
+            on: .compactTab,
+            visualUpdate: {
+                selectedTab = "工作区"
+                operations.append("视觉：工作区")
+                return "过期 Tab 副作用"
+            },
+            deferredSideEffect: { operation in
+                operations.append(operation)
+                completed.fulfill()
+            }
+        )
+        scheduler.commit(
+            on: .compactTab,
+            visualUpdate: {
+                selectedTab = "我的"
+                operations.append("视觉：我的")
+                return "最新 Tab 副作用"
+            },
+            deferredSideEffect: { operation in
+                operations.append(operation)
+                completed.fulfill()
+            }
+        )
+        scheduler.commit(
+            on: .compactSessionsPath,
+            visualUpdate: {
+                operations.append("视觉：会话 Path")
+                return "会话 Path 副作用"
+            },
+            deferredSideEffect: { operation in
+                operations.append(operation)
+                completed.fulfill()
+            }
+        )
 
-        XCTAssertTrue(operations.isEmpty, "Binding setter 当下不能同步发布 SwiftUI 导航状态")
+        XCTAssertEqual(selectedTab, "我的")
+        XCTAssertEqual(
+            operations,
+            ["视觉：工作区", "视觉：我的", "视觉：会话 Path"],
+            "Binding setter 必须在当前交互事务内提交视觉状态"
+        )
         await fulfillment(of: [completed], timeout: 1)
-        XCTAssertEqual(operations, ["最新 Tab", "会话 Path"])
+        XCTAssertEqual(
+            operations,
+            [
+                "视觉：工作区",
+                "视觉：我的",
+                "视觉：会话 Path",
+                "最新 Tab 副作用",
+                "会话 Path 副作用",
+            ]
+        )
     }
 
     func testWorkbenchVisibleSessionExcludesMeTabAndRootPages() {
@@ -2454,7 +2492,7 @@ extension ConversationDataFlowTests {
             accountTokenUsageHandler: { snapshot }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2485,7 +2523,7 @@ extension ConversationDataFlowTests {
             accountTokenUsageHandler: { snapshot }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2517,7 +2555,7 @@ extension ConversationDataFlowTests {
             accountTokenUsageFetchHandler: { await cursor.next() }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2547,7 +2585,7 @@ extension ConversationDataFlowTests {
             accountTokenUsageFetchHandler: { .failed }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3037,7 +3075,7 @@ extension ConversationDataFlowTests {
             )
         ], sessionID: running.id)
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -3093,7 +3131,7 @@ extension ConversationDataFlowTests {
             pendingUserInput: request
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
@@ -3147,7 +3185,7 @@ extension ConversationDataFlowTests {
 
     func testSessionStoreReturnToListPublishesOnlyIntentWhenAlreadyCleared() {
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -3174,7 +3212,7 @@ extension ConversationDataFlowTests {
             CodexHistoryMessage(id: "rollout:1", role: "assistant", content: "已加载", createdAt: Date(timeIntervalSince1970: 1))
         ], sessionID: history.id)
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
@@ -3295,7 +3333,10 @@ extension ConversationDataFlowTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let readStateStore = SessionHistoryReadStateStore(defaults: defaults)
-        let appStore = AppStore(defaults: defaults)
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
         let project = makeProject(id: "project-unread")
         let initialHistory = makeSession(
             id: "session-unread",
@@ -3425,7 +3466,10 @@ extension ConversationDataFlowTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let readStateStore = SessionHistoryReadStateStore(defaults: defaults)
-        let appStore = AppStore(defaults: defaults)
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
         let project = makeProject(id: "project-mark-unread")
         let session = makeSession(
             id: "session-mark-unread",
@@ -3494,7 +3538,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3526,7 +3570,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3553,7 +3597,7 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client }
@@ -3581,7 +3625,7 @@ extension ConversationDataFlowTests {
             projectSessions: [firstProject.id: [freshHistory]]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3611,7 +3655,7 @@ extension ConversationDataFlowTests {
         )
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -3656,7 +3700,7 @@ extension ConversationDataFlowTests {
             source: "codex",
             resumeID: "browsed-session"
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let recentStore = makeRecentWorkspaceStore(
             workspaces: [],
@@ -3719,7 +3763,7 @@ extension ConversationDataFlowTests {
         )
         // 旧版目录刷新会把 projects() 候选项直接写入 recent，特征是没有明确打开时间。
         let legacyAutoWorkspace = AgentWorkspace(project: legacyAutoProject)
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let recentStore = makeRecentWorkspaceStore(
             workspaces: [openedWorkspace, legacyAutoWorkspace],
             endpoint: appStore.endpoint
@@ -3830,7 +3874,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -3884,7 +3928,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -3939,7 +3983,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -3987,7 +4031,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -4034,7 +4078,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -4210,7 +4254,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -4267,7 +4311,7 @@ extension ConversationDataFlowTests {
             }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -4460,7 +4504,7 @@ extension ConversationDataFlowTests {
             gitStatusResults: [session.dir: .success(gitStatus)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4581,7 +4625,7 @@ extension ConversationDataFlowTests {
             gitActionResults: [session.dir: .success(updatedStatus)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4625,7 +4669,7 @@ extension ConversationDataFlowTests {
             gitPatchActionResults: [session.dir: .success(updatedStatus)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4665,7 +4709,7 @@ extension ConversationDataFlowTests {
             gitCommitResults: [session.dir: .success(cleanStatus)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4708,7 +4752,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4742,7 +4786,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4786,7 +4830,7 @@ extension ConversationDataFlowTests {
             gitPullRequestStatusResults: [session.dir: .success(status)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4869,7 +4913,7 @@ extension ConversationDataFlowTests {
             commandActionRunResults: ["\(session.dir)#\(action.id)": .success(result)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -4946,7 +4990,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -5010,7 +5054,7 @@ extension ConversationDataFlowTests {
             capabilityResults: [session.dir: .success(response)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -5034,7 +5078,10 @@ extension ConversationDataFlowTests {
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let appStore = AppStore(defaults: defaults)
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
         let legacy = AgentWorkspace(
             id: "legacy-project-id",
             name: "chat-archive",
@@ -5127,7 +5174,10 @@ extension ConversationDataFlowTests {
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let appStore = AppStore(defaults: defaults)
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
         let profileID = appStore.notificationRoutingProfileID
         let legacy = AgentWorkspace(
             id: "legacy-project-id",
@@ -5181,7 +5231,7 @@ extension ConversationDataFlowTests {
     }
 
     func testOpeningSameResolvedDirectoryTwiceReusesWorkspaceAndSelection() async {
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let typedPath = "/Users/me/code/chat-archive"
         let workspace = AgentWorkspace(

@@ -169,6 +169,15 @@ struct MimiRemoteApp: App {
             profiles: appStore.connectionProfiles
         )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
+        // SessionStore 初始化会同步绑定三个缓存 Store 的 Profile namespace。
+        // 必须在 SwiftUI 接管这些 ObservableObject 前完成，避免在视图更新事务内发布状态。
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: logStore,
+            contextStore: contextStore,
+            workspaceAppearanceStore: workspaceAppearanceStore
+        )
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
         _logStore = StateObject(wrappedValue: logStore)
@@ -177,13 +186,7 @@ struct MimiRemoteApp: App {
         _workspaceAppearanceStore = StateObject(wrappedValue: workspaceAppearanceStore)
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
-        _sessionStore = StateObject(wrappedValue: SessionStore(
-            appStore: appStore,
-            conversationStore: conversationStore,
-            logStore: logStore,
-            contextStore: contextStore,
-            workspaceAppearanceStore: workspaceAppearanceStore
-        ))
+        _sessionStore = StateObject(wrappedValue: sessionStore)
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
     }

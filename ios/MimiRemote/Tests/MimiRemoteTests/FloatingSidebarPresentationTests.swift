@@ -3,6 +3,24 @@ import XCTest
 @testable import MimiRemote
 
 final class FloatingSidebarPresentationTests: XCTestCase {
+    func testCompactBottomChromeClearanceUsesSafeAreaAndSharedBreathingRoom() {
+        XCTAssertEqual(
+            WorkbenchPageLayout.compactBottomChromeClearance(bottomSafeAreaInset: 34),
+            118
+        )
+        XCTAssertEqual(
+            WorkbenchPageLayout.compactBottomChromeClearance(bottomSafeAreaInset: 20),
+            104
+        )
+    }
+
+    func testCompactBottomChromeClearanceProtectsDevicesReportingNoInset() {
+        XCTAssertEqual(
+            WorkbenchPageLayout.compactBottomChromeClearance(bottomSafeAreaInset: 0),
+            104
+        )
+    }
+
     func testGestureStaysPendingBelowHysteresis() {
         let axis = FloatingSidebarGestureArbitration.resolve(
             current: .pending,

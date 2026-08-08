@@ -1424,6 +1424,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = ConnectionRouteProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: false,
             routeProbe: { endpoint, _, _ in
@@ -1581,7 +1582,10 @@ final class PairingLinkTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
         defaults.set("https://relay.example.com", forKey: "agentd.fallbackEndpoint")
-        let store = AppStore(defaults: defaults)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
 
         XCTAssertEqual(store.endpoint, "http://100.64.0.1:8787")
         XCTAssertNil(defaults.object(forKey: "agentd.fallbackEndpoint"))
@@ -1595,6 +1599,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = ConnectionRouteProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: false,
             routeProbe: { endpoint, _, _ in
@@ -1619,6 +1624,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = ConnectionRouteProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: false,
             routeProbe: { endpoint, _, _ in
@@ -1640,7 +1646,11 @@ final class PairingLinkTests: XCTestCase {
         let suiteName = "PairingLinkTests.SettingsAutomaticConnectionTest.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = AppStore(defaults: defaults, prefersLocalConnection: false)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false
+        )
         // 使用同步失败的非法地址验证一次性门闩，测试不发出真实网络请求。
         store.endpoint = "not-a-valid-endpoint"
         store.token = "test-token"
@@ -1662,6 +1672,7 @@ final class PairingLinkTests: XCTestCase {
         defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: false,
             routeProbe: { _, _, _ in
@@ -1685,6 +1696,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = ConnectionRouteProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: false,
             routeProbe: { endpoint, _, _ in
@@ -1709,6 +1721,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = ConnectionRouteProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: true,
             localAgentProbe: { _, _ in },
@@ -1739,6 +1752,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = ConnectionRouteProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: true,
             localAgentProbe: { _, _ in },
@@ -1813,6 +1827,7 @@ final class PairingLinkTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.1,
             prefersLocalConnection: true,
             localAgentProbe: { _, _ in },
@@ -1876,6 +1891,7 @@ final class PairingLinkTests: XCTestCase {
         let recorder = LocalAgentProbeRecorder()
         let store = AppStore(
             defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
             routeProbeTimeout: 0.2,
             prefersLocalConnection: true,
             localAgentProbe: { _, _ in
