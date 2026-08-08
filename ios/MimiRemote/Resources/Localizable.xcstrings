@@ -7637,6 +7637,23 @@
         }
       }
     },
+    "ui.default_model_settings_description": {
+      "comment": "Description for the default model settings page.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose what new conversations use when they do not have a saved model selection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置没有保存模型选择时，新会话使用的模型和推理强度。"
+          }
+        }
+      }
+    },
     "ui.default_option": {
       "comment": "Default option in a picker.",
       "localizations": {
@@ -7650,6 +7667,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "默认"
+          }
+        }
+      }
+    },
+    "ui.no_reasoning_effort_available": {
+      "comment": "Displayed when a model exposes no selectable reasoning effort.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not available for this model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此模型不支持推理强度"
+          }
+        }
+      }
+    },
+    "ui.reset_to_built_in_default": {
+      "comment": "Button that clears a runtime's custom default model settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset to built-in default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复内置默认"
+          }
+        }
+      }
+    },
+    "ui.use_built_in_default": {
+      "comment": "Picker option that uses the product's built-in default model.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置默认"
           }
         }
       }
