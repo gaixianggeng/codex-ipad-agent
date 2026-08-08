@@ -486,9 +486,15 @@ struct WorkspaceRootView: View {
         )
     }
 
+    /// iPad 紧凑导航需要把设备入口放进系统顶栏与会话页对齐；iPhone 保留原来的
+    /// 工作区胶囊行布局，避免窄屏导航出现一条额外的顶栏占位。
+    private var usesTabletTopBarHostSwitcher: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && manageConnections != nil
+    }
+
     @ViewBuilder
     private func navigationContent(tokens: ThemeTokens) -> some View {
-        if let manageConnections {
+        if usesTabletTopBarHostSwitcher, let manageConnections {
             // 会话页把设备切换器放在顶栏左侧；工作区也复用同一位置，避免切换 Tab 时垂直跳动。
             workspaceBrowser(tokens: tokens)
                 .accessibilityIdentifier("workspace.browser")
@@ -665,6 +671,15 @@ struct WorkspaceRootView: View {
 
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
+            if !usesTabletTopBarHostSwitcher, let manageConnections {
+                // iPhone 保留原有工作区布局：设备入口与工作区文件夹胶囊共用这一行。
+                HostSwitcherMenu(
+                    presentation: .toolbar,
+                    manageConnections: manageConnections
+                )
+                .workbenchChromeCircle(tokens: tokens)
+            }
+
             ScrollViewReader { proxy in
                 // 收缩成头像是一种压缩手法：只有横向真的放不下时才该发生，
                 // 而且必须渐进——只有“全展开”和“只展开选中项”两档时，
