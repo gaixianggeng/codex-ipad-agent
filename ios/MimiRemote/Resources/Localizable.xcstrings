@@ -7637,40 +7637,6 @@
         }
       }
     },
-    "ui.default_model_current_value": {
-      "comment": "Footer showing the effective model used by the selected runtime.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Current effective model: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "当前生效模型：%@"
-          }
-        }
-      }
-    },
-    "ui.default_model_reset_description": {
-      "comment": "Explains that reset restores the product defaults for the selected runtime.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restore the original default model and reasoning effort for this runtime."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "恢复此运行时原本的默认模型和推理强度。"
-          }
-        }
-      }
-    },
     "ui.default_model_settings_description": {
       "comment": "Description for the default model settings page.",
       "localizations": {
@@ -7684,23 +7650,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "配置没有保存模型选择时，新会话使用的模型和推理强度。"
-          }
-        }
-      }
-    },
-    "ui.default_model_summary": {
-      "comment": "Compact summary of Codex and Claude default model settings shown in the settings list.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Codex: %@ · %@ / Claude: %@ · %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Codex：%@ · %@ / Claude：%@ · %@"
           }
         }
       }

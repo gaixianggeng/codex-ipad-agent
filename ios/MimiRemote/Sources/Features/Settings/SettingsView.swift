@@ -326,9 +326,10 @@ struct SettingsView: View {
                 NavigationLink {
                     DefaultModelSettingsView()
                 } label: {
+                    // 两个 runtime 的模型 + 档位拼在一行会被截断成一串噪音，
+                    // 详情页已经把它们平铺开了，这里只做入口。
                     SettingsValueLabel(
                         title: L10n.text("ui.default_model"),
-                        value: defaultModelSettingsSummary,
                         systemImage: "cpu"
                     )
                 }
@@ -540,27 +541,6 @@ struct SettingsView: View {
         Binding(
             get: { ComposerPermissionMode.stored(defaultPermissionModeID) },
             set: { defaultPermissionModeID = $0.rawValue }
-        )
-    }
-
-    private var defaultModelSettingsSummary: String {
-        let options = sessionStore.appServerModelOptions
-        let codex = DefaultModelPreferences.resolvedSelection(
-            for: DefaultModelRuntime.codex.rawValue,
-            allOptions: options
-        )
-        let claude = DefaultModelPreferences.resolvedSelection(
-            for: DefaultModelRuntime.claude.rawValue,
-            allOptions: options
-        )
-        return L10n.format(
-            "ui.default_model_summary",
-            codex?.option.title ?? L10n.text("ui.default_model"),
-            codex.map { ModelReasoningGridCatalog.effortTitle($0.effort ?? .medium) }
-                ?? L10n.text("ui.default_option"),
-            claude?.option.title ?? L10n.text("ui.default_model"),
-            claude.map { ModelReasoningGridCatalog.effortTitle($0.effort ?? .medium) }
-                ?? L10n.text("ui.default_option")
         )
     }
 }
