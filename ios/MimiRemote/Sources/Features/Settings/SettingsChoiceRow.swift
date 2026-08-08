@@ -274,3 +274,76 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
+
+/// 语言入口的详情页把应用语言和语音提供方放在同一层，首页只负责展示当前摘要。
+/// 两个选择器仍然绑定到设置页持有的 AppStorage，因此返回首页或重启 App 后不会出现第二份状态。
+struct LanguageSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    @Binding var appLanguageRawValue: String
+    @Binding var voiceInputProviderRawValue: String
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                SettingsChoiceRow(
+                    title: L10n.text("ui.language"),
+                    systemImage: "globe",
+                    options: AppLanguage.allCases,
+                    selection: appLanguageSelection
+                )
+                .detailListRow()
+                .accessibilityIdentifier("settings.language.detail.language")
+            } header: {
+                Text(L10n.text("ui.language"))
+            }
+
+            Section {
+                SettingsChoiceRow(
+                    title: L10n.text("ui.voice_input"),
+                    systemImage: "waveform",
+                    options: VoiceInputProvider.availableProviders(),
+                    selection: voiceInputProviderSelection
+                )
+                .detailListRow()
+                .accessibilityIdentifier("settings.language.detail.voiceInput")
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .navigationTitle(L10n.text("ui.language"))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var appLanguageSelection: Binding<AppLanguage> {
+        Binding(
+            get: { AppLanguage(rawValue: appLanguageRawValue) ?? .system },
+            set: { appLanguageRawValue = $0.rawValue }
+        )
+    }
+
+    private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
+        Binding(
+            get: { VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue) },
+            set: { voiceInputProviderRawValue = $0.rawValue }
+        )
+    }
+}
+
+private extension View {
+    func detailListRow() -> some View {
+        listRowInsets(
+            EdgeInsets(
+                top: 0,
+                leading: SettingsLayoutMetrics.rowHorizontalInset,
+                bottom: 0,
+                trailing: SettingsLayoutMetrics.rowHorizontalInset
+            )
+        )
+    }
+}

@@ -337,33 +337,39 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         add(screenshot)
     }
 
-    func testVoiceProviderInlineSelectionSurvivesRotation() throws {
+    func testLanguageSettingsCombinesVoiceProviderAndSurvivesRotation() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
 
-        let voiceInput = app.descendant(identifier: "settings.voiceInput")
-        XCTAssertTrue(scrollUntilHittable(voiceInput), "设置页应提供语音输入入口")
-        let originalValue = "\(voiceInput.value ?? "")"
+        let language = app.descendant(identifier: "settings.language")
+        XCTAssertTrue(scrollUntilHittable(language), "设置页应提供语言统一入口")
+        let originalValue = "\(language.value ?? "")"
         let originalProviderWasOnDevice =
             originalValue.contains("On-device") || originalValue.contains("设备端")
 
-        voiceInput.tap()
+        language.tap()
+
+        let detailVoiceInput = app.descendant(identifier: "settings.language.detail.voiceInput")
+        XCTAssertTrue(
+            detailVoiceInput.waitForExistence(timeout: 5),
+            "语言详情页应同时展示语音输入选择"
+        )
 
         guard let codex = firstExistingButton(labels: ["Codex"], timeout: 5) else {
-            XCTFail("语音输入行应直接弹出提供方选择菜单")
+            XCTFail("语言详情页应提供 Codex 语音输入选项")
             return
         }
         codex.tap()
         XCTAssertTrue(
-            waitForControlValue(voiceInput, containing: ["Codex"]),
-            "在弹出菜单选择 Codex 后应立即保存设备级偏好"
+            waitForControlValue(detailVoiceInput, containing: ["Codex"]),
+            "在语言详情页选择 Codex 后应立即保存设备级偏好"
         )
 
         rotate(to: .landscapeLeft)
-        let landscapeVoiceInput = app.descendant(identifier: "settings.voiceInput")
+        let landscapeVoiceInput = app.descendant(identifier: "settings.language.detail.voiceInput")
         XCTAssertTrue(
             scrollUntilHittable(landscapeVoiceInput),
-            "横屏后应仍能找到语音输入选择组件"
+            "横屏后语言详情页应仍能找到语音输入选择组件"
         )
         XCTAssertTrue(
             waitForControlValue(landscapeVoiceInput, containing: ["Codex"]),
@@ -371,10 +377,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
 
         rotate(to: .portrait)
-        let portraitVoiceInput = app.descendant(identifier: "settings.voiceInput")
+        let portraitVoiceInput = app.descendant(identifier: "settings.language.detail.voiceInput")
         XCTAssertTrue(
             scrollUntilHittable(portraitVoiceInput),
-            "竖屏后应仍能找到语音输入选择组件"
+            "竖屏后语言详情页应仍能找到语音输入选择组件"
         )
         XCTAssertTrue(
             waitForControlValue(portraitVoiceInput, containing: ["Codex"]),
@@ -382,12 +388,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
 
         if originalProviderWasOnDevice {
-            portraitVoiceInput.tap()
             guard let onDevice = firstExistingButton(
                 labels: ["On-device", "设备端"],
                 timeout: 5
             ) else {
-                XCTFail("测试结束时应能从同一弹出菜单恢复设备端语音")
+                XCTFail("测试结束时应能从语言详情页恢复设备端语音")
                 return
             }
             onDevice.tap()
@@ -399,6 +404,17 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 "测试结束时应恢复原语音提供方"
             )
         }
+
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "语言详情页应提供返回路径")
+        back.tap()
+        XCTAssertTrue(
+            waitForControlValue(
+                language,
+                containing: originalProviderWasOnDevice ? ["On-device", "设备端"] : ["Codex"]
+            ),
+            "返回设置首页后应保留合并入口及最新选择摘要"
+        )
     }
 
     func testMePageCombinesQuotaActivityPreferencesAndMore() throws {
@@ -413,7 +429,6 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let macDevices = app.descendant(identifier: "settings.connectionManagement")
         let appearance = app.descendant(identifier: "settings.appearance")
         let language = app.descendant(identifier: "settings.language")
-        let voiceInput = app.descendant(identifier: "settings.voiceInput")
         let defaultPermissions = app.descendant(identifier: "settings.defaultPermissions")
         let diagnostics = app.descendant(identifier: "settings.diagnostics")
         let advanced = app.descendant(identifier: "settings.advancedDevelopment")
@@ -452,8 +467,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             scrollUntilHittable(defaultPermissions, maximumSwipes: 6),
             "设置页应能滚动到默认权限行内选择器"
         )
-        XCTAssertTrue(voiceInput.exists, "设置页应展示语音行内选择器")
-        XCTAssertEqual(voiceInput.frame.height, 52, accuracy: 1, "语音输入行应保持标准行高")
+        XCTAssertTrue(language.exists, "设置页应展示合并后的语言入口")
+        XCTAssertEqual(language.frame.height, 52, accuracy: 1, "语言入口应保持标准行高")
         XCTAssertEqual(defaultPermissions.frame.height, 52, accuracy: 1, "默认权限行应保持标准行高")
 
         XCTAssertTrue(scrollUntilHittable(aboutLegal), "我的页面应能滚动到“更多”分区")
